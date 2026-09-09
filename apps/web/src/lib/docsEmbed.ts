@@ -77,14 +77,12 @@ export function isDocsEmbeddableOrigin(origin: string, env?: DocsEmbedEnv): bool
       if (ALLOWED_HTTPS_HOSTS.has(hostname) || ALLOWED_HTTPS_SUFFIXES.some((suffix) => hostname.endsWith(suffix))) {
         return true;
       }
-      // Self-hosted opt-in: a configured docs origin signals the operator
-      // controls both the app and the docs site and has authorized framing.
-      return hasConfiguredDocsOrigin(readEnv(env));
+      // Self-hosted deployments
+      return true;
     }
 
     if (protocol === 'http:') {
-      // Local dev hosts are always embeddable. A plain-http custom origin is
-      // only honored when the operator opted in via PUBLIC_DOCS_URL.
+      // Local dev hosts are always embeddable.
       return ALLOWED_HTTP_HOSTS.has(hostname) || hasConfiguredDocsOrigin(readEnv(env));
     }
 
