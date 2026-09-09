@@ -6,6 +6,7 @@ const ALLOWED_HTTPS_HOSTS = new Set([
 const ALLOWED_HTTPS_SUFFIXES = [
   '.breezermm.com',
   '.2breeze.app',
+  '.vthul-it.nl',
 ];
 
 const ALLOWED_HTTP_HOSTS = new Set([
@@ -51,7 +52,9 @@ function readEnv(env?: DocsEmbedEnv): DocsEmbedEnv {
  * widening to a lookalike host.
  */
 export function configuredDocsOrigin(env?: DocsEmbedEnv): string | null {
-  const raw = readEnv(env).PUBLIC_DOCS_URL?.trim();
+  const raw =
+    readEnv(env).PUBLIC_DOCS_URL?.trim() ||
+    (typeof window !== 'undefined' ? window.location.origin : null);
   if (!raw) return null;
   try {
     const { protocol, origin } = new URL(raw);

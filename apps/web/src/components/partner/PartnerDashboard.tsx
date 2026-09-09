@@ -433,7 +433,7 @@ export default function PartnerDashboard() {
         </div>
         <div className="flex flex-wrap gap-2">
           <a
-            href="/partner/customers/new"
+            href="/settings/organizations"
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:opacity-90"
           >
             <UserPlus className="h-4 w-4" />
@@ -514,7 +514,7 @@ export default function PartnerDashboard() {
                 return (
                   <a
                     key={customer.id}
-                    href={`/partner/customers/${encodeURIComponent(customer.id)}`}
+                    href={`/organizations/${encodeURIComponent(customer.id)}`}
                     className="group rounded-lg border bg-background p-4 transition hover:border-primary/40 hover:shadow-xs"
                   >
                     <div className="flex items-start justify-between gap-3">

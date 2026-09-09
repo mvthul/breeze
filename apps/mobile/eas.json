@@ -15,17 +15,20 @@
     "preview": {
       "distribution": "internal",
       "environment": "preview",
+      "android": {
+        "buildType": "apk"
+      },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://us.2breeze.app",
-        "EXPO_PUBLIC_POSTHOG_HOST": "https://us.i.posthog.com"
+        "EXPO_PUBLIC_API_URL": "https://rmm.vthul-it.nl",
+        "BREEZE_MOBILE_ALLOW_NO_SENTRY": "1"
       }
     },
     "production": {
       "distribution": "store",
       "environment": "production",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://us.2breeze.app",
-        "EXPO_PUBLIC_POSTHOG_HOST": "https://us.i.posthog.com"
+        "EXPO_PUBLIC_API_URL": "https://rmm.vthul-it.nl",
+        "BREEZE_MOBILE_ALLOW_NO_SENTRY": "1"
       }
     }
   },

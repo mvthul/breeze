@@ -44,8 +44,21 @@ module.exports = ({ config }) => {
   const sentryDsn = resolveSentryDsn(process.env);
   assertReleaseApiUrl(process.env);
 
+  const plugins = (config.plugins || []).filter((plugin) => {
+    const pluginName = Array.isArray(plugin) ? plugin[0] : plugin;
+    if (pluginName === '@sentry/react-native/expo') {
+      return Boolean(process.env.SENTRY_AUTH_TOKEN);
+    }
+    return true;
+  });
+
   return {
     ...config,
+    plugins,
+    android: {
+      ...config.android,
+      googleServicesFile: process.env.GOOGLE_SERVICES_FILE || config.android?.googleServicesFile,
+    },
     ios: {
       ...config.ios,
       associatedDomains: resolveAssociatedDomains(

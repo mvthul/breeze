@@ -350,10 +350,28 @@
     reverse_proxy portal:4322
   }
 
-  # --- Web frontend (catch-all, with compression) ---
+  # --- Redirects for partner customer & organization routes ---
+  redir /partner/customers/new /settings/organizations temporary
+  @redirPartnerCustomers path_regexp pc ^/partner/customers/(.+)
+  redir @redirPartnerCustomers /settings/organizations/{re.pc.1} temporary
+  redir /partner/customers /settings/organizations temporary
+
+  @redirLegacyOrgs path_regexp lo ^/organizations/(.+)
+  redir @redirLegacyOrgs /settings/organizations/{re.lo.1} temporary
+  redir /organizations /settings/organizations temporary
+
+  # --- Web frontend (catch-all, with compression and docs fallback) ---
   handle {
     encode zstd gzip
-    reverse_proxy web:4321
+    reverse_proxy web:4321 {
+      @notFound status 404
+      handle_response @notFound {
+        reverse_proxy https://docs.breezermm.com {
+          header_up Host docs.breezermm.com
+          header_down -Content-Security-Policy
+        }
+      }
+    }
   }
 
   header {

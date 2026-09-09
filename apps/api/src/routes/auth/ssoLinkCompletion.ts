@@ -159,6 +159,7 @@ export async function completeSsoLogin(
     partnerId: provider.partnerId ?? null,
   });
   const ssoMfa = breezeMfaVerified === true
+    || provider.trustsIdpMfa === true
     || (idpMfa && (user.mfaEnabled === true || !ssoPolicy.required));
 
   // Membership resolution + token payload, keyed on the provider's axis.

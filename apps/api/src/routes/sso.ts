@@ -3439,10 +3439,10 @@ ssoRoutes.get('/callback', async (c) => {
       orgId: provider.partnerId ? null : provider.orgId,
       partnerId: provider.partnerId ?? null,
     });
-    const ssoMfa = idpMfa && (
+    const ssoMfa = provider.trustsIdpMfa === true || (idpMfa && (
       user.mfaEnabled === true
       || (provisionedRoleId === null && !ssoPolicy.required)
-    );
+    ));
 
     // Membership resolution + guarded session identity, keyed on the provider's axis.
     let sessionIdentity: UserSessionIdentity;

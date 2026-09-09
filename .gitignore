@@ -100,6 +100,7 @@ target/
 !apps/helper/src-tauri/icons/**/*.png
 !apps/docs/src/assets/screenshots/**/*.png
 !docs/superpowers/spikes/astro7-baseline/*.png
+!apps/mobile/assets/**/*.png
 .worktrees/
 
 # Monitoring secrets (keep .gitkeep only)

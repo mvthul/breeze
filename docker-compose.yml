@@ -156,6 +156,7 @@ x-api-env: &api-env
   APNS_TEAM_ID: ${APNS_TEAM_ID:-}
   APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
   APNS_ENVIRONMENT: ${APNS_ENVIRONMENT:-}
+  FIREBASE_SERVICE_ACCOUNT: ${FIREBASE_SERVICE_ACCOUNT:-}
   SENTRY_DSN: ${SENTRY_DSN:-}
   SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
   SENTRY_RELEASE: ${SENTRY_RELEASE:-}
@@ -497,7 +498,7 @@ services:
       - '80:80'
       - '443:443'
     environment:
-      CADDY_SITE_ADDRESS: "${BREEZE_DOMAIN:-:80}"
+      CADDY_SITE_ADDRESS: "${CADDY_SITE_ADDRESS:-${BREEZE_DOMAIN:-:80}}"
       ACME_EMAIL: ${ACME_EMAIL:-}
       # Empty (the default) leaves Caddy on Let's Encrypt. Set to `local_certs`
       # in .env when BREEZE_DOMAIN is a name Let's Encrypt cannot reach, so
@@ -763,6 +764,9 @@ services:
     profiles:
       - turn
     network_mode: host
+    environment:
+      COTURN_EXTERNAL_IP: ${COTURN_EXTERNAL_IP:-}
+      TURN_HOST: ${TURN_HOST:-}
     secrets:
       - turn_secret
     tmpfs:
@@ -782,14 +786,21 @@ services:
         fi
         umask 077
         printf 'static-auth-secret=%s\n' "$$(cat /run/secrets/turn_secret)" > /tmp/turn-secret.conf
+        if [ -n "$$COTURN_EXTERNAL_IP" ]; then
+          for ext in $$(echo "$$COTURN_EXTERNAL_IP" | tr ',' ' '); do
+            printf 'external-ip=%s\n' "$$ext" >> /tmp/turn-secret.conf
+          done
+        elif [ -n "$$TURN_HOST" ]; then
+          printf 'external-ip=%s\n' "$$TURN_HOST" >> /tmp/turn-secret.conf
+        fi
         exec turnserver -c /tmp/turn-secret.conf "$$@"
       - turnserver
-      - --listening-port=3478
+      - --listening-port=${TURN_PORT:-3478}
       - --tls-listening-port=5349
       - --fingerprint
       - --use-auth-secret
       - --relay-threads=4
-      - --user-quota=4
+      - --user-quota=16
       - --total-quota=1000
       - --max-bps=${TURN_MAX_BPS:-5000000}
       - --no-multicast-peers
@@ -813,8 +824,7 @@ services:
       - --min-port=49152
       - --max-port=65535
       - --no-cli
-      - --realm=${TURN_REALM:-breeze.local}
-      - --external-ip=${TURN_HOST:-}
+      - --realm=${TURN_REALM:-${BREEZE_DOMAIN:-breeze.local}}
 
 networks:
   # Fixed subnet so Caddy gets a stable, known peer address (see caddy service

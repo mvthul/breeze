@@ -1,0 +1,7 @@
+# EAS ignore for apps/mobile
+node_modules/
+.expo/
+dist/
+web-build/
+android/
+ios/

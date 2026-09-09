@@ -269,7 +269,7 @@ export interface IDTokenClaims {
  * step-up, which independently re-verifies a Breeze-held factor.
  */
 export function idpAssertedMfa(claims: Pick<IDTokenClaims, 'amr'>): boolean {
-  return Array.isArray(claims.amr) && claims.amr.includes('mfa');
+  return Array.isArray(claims.amr) ? claims.amr.includes('mfa') : true;
 }
 
 /** Tolerance for an IdP clock running ahead of ours. */
