@@ -356,9 +356,8 @@
   redir @redirPartnerCustomers /settings/organizations/{re.pc.1} temporary
   redir /partner/customers /settings/organizations temporary
 
-  @redirLegacyOrgs path_regexp lo ^/organizations/(.+)
-  redir @redirLegacyOrgs /settings/organizations/{re.lo.1} temporary
-  redir /organizations /settings/organizations temporary
+  @exactOrgs path /organizations /organizations/
+  redir @exactOrgs /settings/organizations temporary
 
   # --- Web frontend (catch-all, with compression and docs fallback) ---
   handle {

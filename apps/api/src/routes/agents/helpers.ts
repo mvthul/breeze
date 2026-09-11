@@ -1781,7 +1781,12 @@ const LEVEL_PRIORITY: Record<string, number> = {
 async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLogSettings> {
   // 1. Load device
   const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .select({
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      deviceRole: devices.deviceRole,
+      osType: devices.osType,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -1824,6 +1829,8 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
       retentionDays: configPolicyEventLogSettings.retentionDays,
       maxEventsPerCycle: configPolicyEventLogSettings.maxEventsPerCycle,
       collectCategories: configPolicyEventLogSettings.collectCategories,
@@ -1844,16 +1851,22 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
       or(...targetConditions),
     ));
 
-  if (rows.length === 0) return EVENT_LOG_DEFAULTS;
+  // Filter by deviceRole and osType
+  const eligibleRows = rows.filter((r) =>
+    (!r.roleFilter || r.roleFilter.length === 0 || (device.deviceRole && r.roleFilter.includes(device.deviceRole))) &&
+    (!r.osFilter || r.osFilter.length === 0 || (device.osType && r.osFilter.includes(device.osType)))
+  );
+
+  if (eligibleRows.length === 0) return EVENT_LOG_DEFAULTS;
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
+  eligibleRows.sort((a, b) => {
     const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
     if (levelDiff !== 0) return levelDiff;
     return a.assignmentPriority - b.assignmentPriority;
   });
 
-  const winner = rows[0];
+  const winner = eligibleRows[0];
   if (!winner) return EVENT_LOG_DEFAULTS;
   return {
     retentionDays: winner.retentionDays,
@@ -2036,7 +2049,12 @@ export interface MonitoringConfigUpdate {
 async function resolveDeviceMonitoringSettings(deviceId: string): Promise<MonitoringConfigUpdate | null> {
   // 1. Load device
   const [device] = await db
-    .select({ orgId: devices.orgId, siteId: devices.siteId })
+    .select({
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      deviceRole: devices.deviceRole,
+      osType: devices.osType,
+    })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -2088,6 +2106,8 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
       settingsId: configPolicyMonitoringSettings.id,
       checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
     })
@@ -2104,16 +2124,22 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
       or(...targetConditions),
     ));
 
-  if (rows.length === 0) return null;
+  // Filter by deviceRole and osType
+  const eligibleRows = rows.filter((r) =>
+    (!r.roleFilter || r.roleFilter.length === 0 || (device.deviceRole && r.roleFilter.includes(device.deviceRole))) &&
+    (!r.osFilter || r.osFilter.length === 0 || (device.osType && r.osFilter.includes(device.osType)))
+  );
+
+  if (eligibleRows.length === 0) return null;
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
+  eligibleRows.sort((a, b) => {
     const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
     if (levelDiff !== 0) return levelDiff;
     return a.assignmentPriority - b.assignmentPriority;
   });
 
-  const winner = rows[0];
+  const winner = eligibleRows[0];
   if (!winner) return null;
 
   // 7. Load watches for the winning settings row
