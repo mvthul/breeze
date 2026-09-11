@@ -201,6 +201,161 @@ func TestCreateSnapshot_EmptyFileSlice(t *testing.T) {
 	}
 }
 
+// growOnceProvider wraps mockProvider and, on the first N Upload calls for a
+// specific source path, appends extra bytes to that source file AFTER the
+// (successful) upload lands — simulating a file that keeps changing while it
+// is being backed up (a live log, the agent's own checkpoint journal, #5581).
+// Each grow also advances the file's mtime by a full second so the
+// post-upload os.Stat comparison in reconcileAfterUpload reliably observes a
+// change even on filesystems with 1-second mtime resolution.
+type growOnceProvider struct {
+	*mockProvider
+	growPath string
+	extra    []byte
+	grows    int // number of remaining times to grow growPath on Upload
+
+	mu              sync.Mutex
+	growPathUploads int
+}
+
+func (p *growOnceProvider) Upload(localPath, remotePath string) error {
+	if err := p.mockProvider.Upload(localPath, remotePath); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if localPath != p.growPath || p.grows <= 0 {
+		return nil
+	}
+	p.grows--
+	p.growPathUploads++
+	f, err := os.OpenFile(p.growPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil
+	}
+	_, _ = f.Write(p.extra)
+	_ = f.Close()
+	// Force the mtime forward so a coarse (1s) mtime clock can't make this
+	// growth look like a no-op to reconcileAfterUpload's comparison.
+	future := time.Now().Add(time.Duration(p.growPathUploads) * time.Second)
+	_ = os.Chtimes(p.growPath, future, future)
+	return nil
+}
+
+// TestCreateSnapshot_GrowingFile_ReconciledOnRetry proves #5581's core fix:
+// a file that grows between the pre-upload measurement and the upload
+// itself is re-measured and re-uploaded ONCE, and the manifest entry ends
+// up describing exactly the bytes that landed in that retry — not the
+// walk-time size, and not a checksum read at some other, unrelated instant.
+func TestCreateSnapshot_GrowingFile_ReconciledOnRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	growPath := createTempFile(t, tmpDir, "growing.log", "start")
+
+	backing := newMockProvider()
+	provider := &growOnceProvider{mockProvider: backing, growPath: growPath, extra: []byte("-MORE"), grows: 1}
+
+	files := []backupFile{
+		{sourcePath: growPath, snapshotPath: "path_0/growing.log", size: 5, modTime: time.Now()},
+	}
+	snapshot, err := CreateSnapshot(provider, files)
+	if err != nil {
+		t.Fatalf("CreateSnapshot failed: %v", err)
+	}
+	if len(snapshot.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(snapshot.Files))
+	}
+	entry := snapshot.Files[0]
+	if entry.Volatile {
+		t.Errorf("a file that stabilizes after ONE retry must not be marked Volatile, got %+v", entry)
+	}
+
+	finalContent, err := os.ReadFile(growPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	wantSize := int64(len(finalContent))
+	wantChecksum, err := sha256File(growPath)
+	if err != nil {
+		t.Fatalf("sha256File: %v", err)
+	}
+	if entry.Size != wantSize {
+		t.Errorf("entry.Size = %d, want %d (the grown file's final size)", entry.Size, wantSize)
+	}
+	if entry.Checksum != wantChecksum {
+		t.Errorf("entry.Checksum = %q, want %q (the grown file's final checksum)", entry.Checksum, wantChecksum)
+	}
+
+	// The uploaded OBJECT must itself be wantSize bytes — not just the
+	// manifest's claim — proving Size/Checksum describe the bytes that were
+	// actually stored, the whole point of the fix.
+	uploadedBytes, ok := backing.files[entry.BackupPath]
+	if !ok {
+		t.Fatalf("no object stored at %s", entry.BackupPath)
+	}
+	if int64(len(uploadedBytes)) != wantSize {
+		t.Errorf("stored object is %d bytes, want %d", len(uploadedBytes), wantSize)
+	}
+}
+
+// TestCreateSnapshot_FileChangesTwice_RecordedVolatile proves the other half
+// of #5581's policy: a file that keeps changing even across the single
+// reconciliation retry is not chased forever — it is recorded Volatile with
+// the LAST pre-upload measurement (what the retry itself actually
+// uploaded), and the run carries a warning-worthy volatile count rather than
+// failing the file.
+func TestCreateSnapshot_FileChangesTwice_RecordedVolatile(t *testing.T) {
+	tmpDir := t.TempDir()
+	growPath := createTempFile(t, tmpDir, "growing.log", "start")
+
+	backing := newMockProvider()
+	provider := &growOnceProvider{mockProvider: backing, growPath: growPath, extra: []byte("-MORE"), grows: 2}
+
+	files := []backupFile{
+		{sourcePath: growPath, snapshotPath: "path_0/growing.log", size: 5, modTime: time.Now()},
+	}
+	snapshot, err := CreateSnapshot(provider, files)
+	if err != nil {
+		t.Fatalf("CreateSnapshot failed: %v", err)
+	}
+	if len(snapshot.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(snapshot.Files))
+	}
+	entry := snapshot.Files[0]
+	if !entry.Volatile {
+		t.Fatalf("a file that changes again across the retry must be recorded Volatile, got %+v", entry)
+	}
+	if snapshot.VolatileFiles != 1 {
+		t.Errorf("snapshot.VolatileFiles = %d, want 1", snapshot.VolatileFiles)
+	}
+
+	// The entry must describe what the RETRY actually uploaded (the second
+	// upload call for growPath), not the walk-time stat nor the very first
+	// upload's bytes.
+	uploadedBytes, ok := backing.files[entry.BackupPath]
+	if !ok {
+		t.Fatalf("no object stored at %s", entry.BackupPath)
+	}
+	if entry.Size != int64(len(uploadedBytes)) {
+		t.Errorf("entry.Size = %d, want %d (bytes actually stored at BackupPath)", entry.Size, len(uploadedBytes))
+	}
+	gotChecksum := sha256HashBytes(t, uploadedBytes)
+	if entry.Checksum != gotChecksum {
+		t.Errorf("entry.Checksum = %q, want %q (checksum of bytes actually stored)", entry.Checksum, gotChecksum)
+	}
+}
+
+// sha256HashBytes hashes b the same way sha256File hashes a file, for
+// comparing a manifest entry's checksum against in-memory upload bytes.
+func sha256HashBytes(t *testing.T, b []byte) string {
+	t.Helper()
+	tmp := createTempFile(t, t.TempDir(), "hashme", string(b))
+	sum, err := sha256File(tmp)
+	if err != nil {
+		t.Fatalf("sha256File: %v", err)
+	}
+	return sum
+}
+
 // cancelAfterFirstUploadProvider wraps mockProvider and cancels the given
 // CancelFunc right after the FIRST real Upload lands, so an aborted run has
 // something concrete under ITS OWN prefix for the abort cleanup to act on
@@ -2267,5 +2422,92 @@ func TestPublishSystemState_SkipsUploadingSymlinkArtifacts(t *testing.T) {
 	}
 	if gotLink.LinkTarget != "real.txt" {
 		t.Errorf("published symlink artifact LinkTarget = %q, want %q", gotLink.LinkTarget, "real.txt")
+	}
+}
+
+// W02: SnapshotFile gains content-less entry kinds (symlink/dir), full mode
+// bits and owner — HasContent() distinguishes an uploaded-content entry
+// from a content-less one, and snapshotNeedsFidelityFormat decides whether
+// the manifest must be stamped formatVersion 3. Plain-file JSON must stay
+// byte-identical to before these fields existed (omitempty).
+func TestSnapshotFile_HasContentAndFormatVersion(t *testing.T) {
+	file := SnapshotFile{SourcePath: "/etc/hosts", BackupPath: "snapshots/s/files/path_0/etc/hosts", Size: 3}
+	link := SnapshotFile{SourcePath: "/bin", Kind: KindSymlink, LinkTarget: "usr/bin"}
+	dir := SnapshotFile{SourcePath: "/var/empty", Kind: KindDir, ModeBits: 0o755}
+	if !file.HasContent() || link.HasContent() || dir.HasContent() {
+		t.Fatalf("HasContent: file=%v link=%v dir=%v", file.HasContent(), link.HasContent(), dir.HasContent())
+	}
+	if snapshotNeedsFidelityFormat([]SnapshotFile{file}) {
+		t.Error("plain files must not force format 3")
+	}
+	if !snapshotNeedsFidelityFormat([]SnapshotFile{file, link}) {
+		t.Error("a symlink entry must force format 3")
+	}
+	owned := SnapshotFile{SourcePath: "/home/x", BackupPath: "k", Owner: &FileOwner{UID: 1000, GID: 1000}}
+	if !snapshotNeedsFidelityFormat([]SnapshotFile{owned}) {
+		t.Error("an owner must force format 3")
+	}
+	// JSON shape: new fields are omitted when zero so old manifests stay byte-identical.
+	data, _ := json.Marshal(file)
+	for _, k := range []string{"kind", "linkTarget", "modeBits", "owner"} {
+		if strings.Contains(string(data), `"`+k+`"`) {
+			t.Errorf("plain file JSON leaked %s: %s", k, data)
+		}
+	}
+	data, _ = json.Marshal(link)
+	if !strings.Contains(string(data), `"kind":"symlink"`) || !strings.Contains(string(data), `"linkTarget":"usr/bin"`) {
+		t.Errorf("symlink JSON = %s", data)
+	}
+}
+
+// W02: content-less entries (symlinks/directories) are never uploaded,
+// never sha256'd, and never opened from disk at all — the manifest carries
+// their metadata straight from backupFile, and the manifest is stamped
+// formatVersion 3.
+func TestCreateSnapshot_ContentlessEntriesNotUploaded(t *testing.T) {
+	provider := newMockProvider()
+	now := time.Now().UTC()
+	tmp := t.TempDir()
+	hosts := pathpkg.Join(tmp, "hosts")
+	if err := os.WriteFile(hosts, []byte("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files := []backupFile{
+		{sourcePath: hosts, snapshotPath: "path_0/etc/hosts", size: 3, modTime: now, mode: 0o644, modeBits: 0o644, owner: &FileOwner{UID: 0, GID: 0}},
+		{sourcePath: "/bin", snapshotPath: "path_0/bin", modTime: now, mode: os.ModeSymlink | 0o777, kind: KindSymlink, linkTarget: "usr/bin"},
+		{sourcePath: "/var/empty", snapshotPath: "path_0/var/empty", modTime: now, mode: os.ModeDir | 0o755, kind: KindDir, modeBits: 0o755},
+	}
+
+	snap, err := CreateSnapshot(provider, files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.uploadCalls) != 2 { // hosts + manifest.json
+		t.Fatalf("upload calls = %+v, want file + manifest only", provider.uploadCalls)
+	}
+	if snap.FormatVersion != manifestFormatFidelity || len(snap.Files) != 3 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	var link, dir SnapshotFile
+	for _, f := range snap.Files {
+		switch f.Kind {
+		case KindSymlink:
+			link = f
+		case KindDir:
+			dir = f
+		}
+	}
+	if link.BackupPath != "" || link.Checksum != "" || link.LinkTarget != "usr/bin" || link.Size != 0 {
+		t.Errorf("symlink entry = %+v", link)
+	}
+	if dir.BackupPath != "" || dir.ModeBits != 0o755 {
+		t.Errorf("dir entry = %+v", dir)
+	}
+	var stored Snapshot
+	if err := json.Unmarshal(provider.files[path.Join("snapshots", snap.ID, "manifest.json")], &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.FormatVersion != 3 || stored.Files[0].Owner == nil {
+		t.Errorf("stored manifest = %+v", stored)
 	}
 }
