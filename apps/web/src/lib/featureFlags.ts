@@ -12,7 +12,7 @@ function parseBoolean(value: string | undefined, fallback = false): boolean {
 
 export const ENABLE_ENDPOINT_AV_FEATURES = parseBoolean(
   import.meta.env.PUBLIC_ENABLE_ENDPOINT_AV_FEATURES,
-  false
+  true
 );
 
 export const ENABLE_EDR_INTEGRATIONS = parseBoolean(
