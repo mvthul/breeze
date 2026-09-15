@@ -44,6 +44,16 @@ vi.mock('../../middleware/auth', async () => ({
   siteAccessCheck: (await vi.importActual<typeof import('../../middleware/auth')>('../../middleware/auth')).siteAccessCheck,
 }));
 
+// #4211 (W01) — aiDrafts.ts (mounted under ticketsRoutes) now imports
+// getLatestTicketProposal, which pulls in runTrace.ts's real dependency
+// chain (alertVerdicts/sweepFindings -> actionIntents/intentService ->
+// aiTools.ts) — heavier than this file's own minimal `../../db/schema`
+// mock below supports. This suite never exercises the ai-proposal routes
+// (that's aiDrafts.test.ts), so stub the module out entirely.
+vi.mock('../../services/aiTicketProposal', () => ({
+  getLatestTicketProposal: vi.fn(),
+}));
+
 vi.mock('../../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
@@ -87,6 +97,14 @@ vi.mock('../../db/schema', () => ({
     startedAt: 'startedAt', endedAt: 'endedAt', durationMinutes: 'durationMinutes',
     description: 'description', isBillable: 'isBillable', billingStatus: 'billingStatus',
     hourlyRate: 'hourlyRate', isApproved: 'isApproved', addedBy: 'addedBy'
+  },
+  // #5783 W01: ticketChecklistService is reachable from routes/tickets/index.ts,
+  // and its module-scope CHECKLIST_ORDER reads these columns at import time.
+  ticketChecklistItems: {
+    id: 'id', orgId: 'orgId', ticketId: 'ticketId', label: 'label', detail: 'detail',
+    position: 'position', doneAt: 'doneAt', doneByUserId: 'doneByUserId', source: 'source',
+    sourceTemplateItemId: 'sourceTemplateItemId', createdBy: 'createdBy',
+    createdAt: 'createdAt', updatedAt: 'updatedAt',
   },
   ticketParts: {
     id: 'id', ticketId: 'ticketId', orgId: 'orgId', addedBy: 'addedBy',

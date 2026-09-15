@@ -110,6 +110,9 @@ const FULL_ROW = {
   enableBackups: false,
   enableReports: false,
   enableSupportUsage: false,
+  enableService: false,
+  enableDocuments: false,
+  enableLifecycle: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome',
@@ -162,6 +165,9 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableBackups: false,
       enableReports: false,
       enableSupportUsage: false,
+      enableService: false,
+      enableDocuments: false,
+      enableLifecycle: false,
       supportEmail: 'help@msp.example',
       supportPhone: null,
       welcomeMessage: 'Welcome',
@@ -189,6 +195,9 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableBackups: false,
       enableReports: false,
       enableSupportUsage: false,
+      enableService: false,
+      enableDocuments: false,
+      enableLifecycle: false,
       supportEmail: null,
       supportPhone: null,
       welcomeMessage: null,
@@ -307,12 +316,17 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     dbUpsertReturning.mockResolvedValue([{
       ...FULL_ROW,
       enableDashboard: true,
-      enableReports: true
+      enableReports: true,
+      enableService: true,
+      enableDocuments: false,
+      enableLifecycle: true
     }]);
 
     const res = await patch({
       enableDashboard: true,
-      enableReports: true
+      enableReports: true,
+      enableService: true,
+      enableLifecycle: true
     });
 
     expect(res.status).toBe(200);
@@ -321,21 +335,29 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableSecurity: false,
       enableBackups: false,
       enableReports: true,
-      enableSupportUsage: false
+      enableSupportUsage: false,
+      enableService: true,
+      enableDocuments: false,
+      enableLifecycle: true
     });
     expect(onPortalFlagsChanged).toHaveBeenCalledWith({
       orgId: ORG_ID,
       createdBy: 'u-1',
       requested: {
         enableDashboard: true,
-        enableReports: true
+        enableReports: true,
+        enableService: true,
+        enableLifecycle: true
       },
       current: {
         enableDashboard: true,
         enableSecurity: false,
         enableBackups: false,
         enableReports: true,
-        enableSupportUsage: false
+        enableSupportUsage: false,
+        enableService: true,
+        enableDocuments: false,
+        enableLifecycle: true
       }
     });
   });

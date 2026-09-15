@@ -263,6 +263,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // auto-discovered as an ordinary shape-1 org-tenant table — not listed here.
   // Functional cross-partner forge proof: stripe-payments-rls.integration.test.ts.
   ['stripe_connect_accounts', 'partner_id'],
+  // stripe_connect_credentials (SEC-150): archive of SUPERSEDED partner Stripe
+  // keys so an already-rotated credential can still expire the Checkout sessions
+  // it minted. Same partner-axis shape as its parent (system-scope writes,
+  // partner-scoped reads). No org_id, so no org-cascade / export-policy entry;
+  // cascadeDeletePartner's information_schema partner_id sweep erases it with the
+  // partner. Functional cross-partner forge proof:
+  // stripeConnectCredentialsRls.integration.test.ts.
+  ['stripe_connect_credentials', 'partner_id'],
   ['partner_llm_configs', 'partner_id'],
   // authenticator_policies: per-MSP approval-security policy (Shape 3). One row
   // per partner; policy gates on breeze_has_partner_access(partner_id) with a
@@ -314,6 +322,43 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  // network_monitors (#5287 W04): reshaped from org-only to org XOR partner by
+  // 2026-10-16-181300-monitor-coverage-kinds, so one MSP-authored "is the
+  // gateway up" check runs for every org under the partner. CHECK
+  // network_monitors_one_owner_chk enforces exactly one axis; the partner-wide
+  // SELECT branch (network_monitors_partner_wide_select) ships in the same
+  // migration and is load-bearing on the agent path. Functional cross-partner
+  // forge proof: networkMonitorPartnerRls.integration.test.ts.
+  'network_monitors',
+  // monitor_definitions (#5287 W02): a monitor is org-scoped (org_id set) or
+  // partner-wide (partner_id set, org_id NULL — one MSP-authored monitor
+  // deployed across every customer). Created dual-axis from day one in
+  // 2026-10-16-160300-monitor-definitions, with the partner-wide SELECT branch
+  // in the same migration. CHECK monitor_definitions_one_owner_chk enforces
+  // exactly one axis. Functional cross-partner forge proof:
+  // monitorDefinitionsPartnerRls.integration.test.ts.
+  'monitor_definitions',
+  // ai_script_policies (AI script authoring W04, #5612): a policy row is
+  // org-scoped (org_id set — the GRANT) or partner-wide (partner_id set,
+  // org_id NULL — the CEILING). Created dual-axis from day one in
+  // 2026-10-16-120200-ai-script-policies. The org_id column means org-tenant
+  // auto-discovery already asserts the breeze_has_org_access branch, so this
+  // entry is what asserts the breeze_has_partner_access (partner-wide)
+  // branch. CHECK ai_script_policies_one_owner_chk enforces exactly one axis.
+  // Functional cross-partner forge proof:
+  // aiScriptPoliciesPartnerRls.integration.test.ts.
+  'ai_script_policies',
+  // deliverable_template_sets / deliverable_template_items (spec #5573 §4.6,
+  // D9): a template set is org-scoped (org_id set) OR partner-wide (partner_id
+  // set, org_id NULL — one service tier applied across every org the MSP
+  // manages). Created dual-axis from day one in
+  // 2026-10-16-110100-deliverable-templates. The org_id column means org-tenant
+  // auto-discovery already asserts the breeze_has_org_access branch, so these
+  // entries are what assert the breeze_has_partner_access (partner-wide)
+  // branch. CHECKs <table>_one_owner_chk enforce exactly one axis. Functional
+  // cross-partner forge proof: deliverableTemplatesPartnerRls.integration.test.ts.
+  'deliverable_template_sets',
+  'deliverable_template_items',
   'users',
   'deployment_invites',
   'access_reviews',
@@ -586,6 +631,17 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // changes. If access_reviews ever gains a CHECK, this note has no examples
 // left and should be deleted rather than patched.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
+  // monitor_definitions_one_owner_chk ((org_id IS NULL) <> (partner_id IS
+  // NULL)), 2026-10-16-160300 (#5287 W02). Its partner-wide SELECT branch
+  // (monitor_definitions_partner_wide_select) ships in the same migration, so
+  // it needs no PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry.
+  'monitor_definitions',
+  // ai_script_policies_one_owner_chk, 2026-10-16-120200 (#5612 W04).
+  'ai_script_policies',
+  // deliverable_template_sets_one_owner_chk / deliverable_template_items_one_owner_chk
+  // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-100500.
+  'deliverable_template_sets',
+  'deliverable_template_items',
   'access_reviews',
   'custom_field_definitions',
   'configuration_policies',
@@ -683,6 +739,10 @@ const DEVICE_ID_JOIN_POLICY_TABLES: ReadonlySet<string> = new Set<string>([
 // leave automation_id NULL and reach their org via config_policy_id instead.
 const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([
   ['automation_runs', ['automations', 'configuration_policies']],
+  // #5289: a monitor ATTACHMENT has no org_id — it reaches its tenant through
+  // config_policy_feature_links -> configuration_policies, the same join the
+  // other config_policy_* child tables use.
+  ['config_policy_monitors', ['configuration_policies']],
   ['ai_messages', ['ai_sessions']],
   ['ai_tool_executions', ['ai_sessions']],
   // NOTE: script_execution_batches is NOT here — it carries a denormalized
@@ -691,6 +751,10 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // `scripts` could not satisfy the system-script INSERT under bound parameters.
   ['software_versions', ['software_catalog']],
   ['software_install_methods', ['software_catalog']],
+  // alert_correlations has TWO not-null FKs into `alerts` (parent_alert_id,
+  // child_alert_id). Because both parents are the SAME table, the all-of
+  // parent rule below cannot express "check both endpoints" — that half of the
+  // contract lives in PARENT_FK_REQUIRED_FK_COLUMNS instead (#5607).
   ['alert_correlations', ['alerts']],
   ['alert_notifications', ['alerts']],
   // 2026-06-13-b backstop: seven more child tables that shipped with NO rls and
@@ -700,10 +764,21 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // breeze_has_org_access and joins through `roles`, so this assertion holds.
   ['webhook_deliveries', ['webhooks']],
   ['network_monitor_alert_rules', ['network_monitors']],
-  ['network_monitor_results', ['network_monitors']],
+  // network_monitor_results was HERE until #5287 W04: it now carries its own
+  // denormalized org_id (the parent can be partner-wide, which made the join
+  // blind), so it is auto-discovered as an ordinary Shape 1 org-tenant table.
   ['role_permissions', ['roles']],
   ['plugin_logs', ['plugin_installations']],
   ['report_runs', ['reports']],
+  // #4248 W03: per-recipient narrative delivery. Declared parent is `reports`,
+  // NOT `report_runs` -- the strict per-command assertion below runs
+  // predicateCoversParent, which needs breeze_has_org_access(<alias>.org_id) on
+  // the DECLARED parent's alias, and report_runs has no org_id. The policy
+  // therefore reaches `reports` through a scalar subquery, exactly like the
+  // config_policy_* children do (2026-06-23-sec-review-1-fk-child-rls-backstop.sql).
+  // Its ONLY registration: the FK is ON DELETE CASCADE, so the existing
+  // report_runs pre-clear in tenantCascade.ts removes deliveries for free.
+  ['report_run_deliveries', ['reports']],
   ['maintenance_occurrences', ['maintenance_windows']],
   // 2026-06-23 security-review #1 backstop: five tenant child tables that
   // shipped with NO rls and reach their org only through a parent FK. The three
@@ -923,6 +998,34 @@ const PARENT_FK_REQUIRED_PARENTS_PER_COMMAND: ReadonlyMap<string, PerCommandPare
   ],
 ]);
 
+// Child tables that reach their tenant through MORE THAN ONE FK column into
+// the SAME parent table. PARENT_FK_REQUIRED_PARENTS_PER_COMMAND's 'all-of'
+// rule keys on parent TABLE names, so it is blind to this shape: listing
+// `['alerts', 'alerts']` proves nothing. This map pins the FK COLUMNS that
+// must appear in the slot Postgres evaluates, for every required command.
+//
+// alert_correlations (#5607): the 2026-05-30 parent-FK migration joined
+// `alerts` on parent_alert_id only, so an edge whose parent is org A's and
+// whose child is org B's was DB-visible (and insertable) under an org-A token.
+// 2026-10-16-170100-alert-correlations-child-org-rls.sql ANDs the same EXISTS
+// on child_alert_id. Both columns are NOT NULL, so the conjunction cannot go
+// three-valued.
+//
+// Scope limit, stated plainly: this is a co-presence check on column NAMES in
+// the evaluated predicate. It catches a column dropped from a slot entirely,
+// which is the regression this class has actually shipped. It does NOT parse
+// boolean structure, so it cannot tell `EXISTS(parent) AND EXISTS(child)` from
+// `EXISTS(parent) OR EXISTS(child)` — and the OR form is a full reopening of
+// the leak that mentions both columns. A green run here is therefore NOT proof
+// of isolation. The proof is behavioural, in
+// alertCorrelationsChildRls.integration.test.ts, which does discriminate the
+// OR form on the SELECT policy — the load-bearing one, since Postgres enforces
+// it on the rows an UPDATE/DELETE reads and writes too. See that file's header
+// for the measurement.
+const PARENT_FK_REQUIRED_FK_COLUMNS: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([
+  ['alert_correlations', ['parent_alert_id', 'child_alert_id']],
+]);
+
 async function loadPublicPolicies(): Promise<Map<string, PolicyRow[]>> {
   const rows = (await db.execute(sql`
     SELECT tablename, policyname, cmd, permissive, qual, with_check
@@ -951,6 +1054,30 @@ async function loadRlsState(): Promise<Map<string, boolean>> {
 }
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
+
+/**
+ * Parent-FK children that are APPEND-ONLY by design and therefore carry only
+ * SELECT + INSERT policies. With no policy for a command, FORCE ROW LEVEL
+ * SECURITY denies it for every role including the owner — that absence is the
+ * control, so demanding four commands here would demand the bug back.
+ *
+ * script_versions (2026-10-16-100000-script-versions-immutable.sql): a version
+ * row is the immutable definition of an execution (spec §4.1). It is never
+ * updated, and it dies only through `script_id ... ON DELETE CASCADE`, which
+ * Postgres runs with force-RLS disabled.
+ *
+ * Adding a table here requires the absence of UPDATE/DELETE policies to be
+ * PROVEN behaviourally, not merely declared — see
+ * scriptVersionsImmutable.integration.test.ts.
+ */
+const APPEND_ONLY_PARENT_FK_TABLES: ReadonlySet<string> = new Set<string>(['script_versions']);
+
+/** Commands a parent-FK child must cover, given whether it is append-only. */
+function requiredCmdsFor(table: string): readonly Cmd[] {
+  return APPEND_ONLY_PARENT_FK_TABLES.has(table)
+    ? (['SELECT', 'INSERT'] as const)
+    : REQUIRED_CMDS;
+}
 
 interface TableRow {
   table_name: string;
@@ -1792,9 +1919,17 @@ describe('RLS coverage contract', () => {
 
       const row = rows[0];
       const covered = new Set<string>(row?.covered_cmds ?? []);
-      const missing = REQUIRED_CMDS.filter((cmd) => !covered.has(cmd));
+      const missing = requiredCmdsFor(table).filter((cmd) => !covered.has(cmd));
       if (!row || !row.rls_on || missing.length > 0) {
         offenders.push({ table, rls_on: Boolean(row?.rls_on), missing_cmds: missing });
+      }
+      // An append-only table must have NO update/delete policy at all. If one
+      // reappears, the exemption is stale and must be removed, not honoured.
+      if (APPEND_ONLY_PARENT_FK_TABLES.has(table)) {
+        const surplus = ['UPDATE', 'DELETE'].filter((cmd) => covered.has(cmd));
+        if (surplus.length > 0) {
+          offenders.push({ table, rls_on: Boolean(row?.rls_on), missing_cmds: surplus.map((c) => `unexpected:${c}`) });
+        }
       }
     }
 
@@ -1828,7 +1963,7 @@ describe('RLS coverage contract', () => {
         const rule: ParentRule = overlay?.[cmd]?.[slot] ?? { kind: 'any-of', parents };
         return predicateCoversParents(pred, rule);
       });
-      const missing = REQUIRED_CMDS.filter((cmd) => !covered.has(cmd));
+      const missing = requiredCmdsFor(table).filter((cmd) => !covered.has(cmd));
       const rlsOn = rlsState.get(table) ?? false;
       if (!rlsOn || missing.length > 0) offenders.push({ table, rls_on: rlsOn, missing_cmds: missing });
     }
@@ -1840,6 +1975,36 @@ describe('RLS coverage contract', () => {
         `Fix: SELECT/DELETE need the parent-alias helper in USING, INSERT in WITH CHECK, UPDATE in BOTH. ` +
         `Tables listed in PARENT_FK_REQUIRED_PARENTS_PER_COMMAND must satisfy every parent in their all-of rules. ` +
         `Shape reference: 2026-05-30-fk-child-tables-rls.sql; matcher: src/db/rlsPolicyShape.ts.`
+    ).toEqual([]);
+  });
+
+  // #5607: the two assertions above are blind to a child table with several FK
+  // columns into the SAME parent — they only ever prove the policy joins
+  // `alerts` once. Require every declared FK column to appear in the evaluated
+  // slot so a half predicate (parent checked, child not) cannot come back.
+  it('every multi-FK child table guards each declared FK column in the slot Postgres evaluates', async () => {
+    const policiesByTable = await loadPublicPolicies();
+    const offenders: Array<{ table: string; missing_cmds: string[] }> = [];
+
+    for (const [table, columns] of PARENT_FK_REQUIRED_FK_COLUMNS) {
+      const covered = coveredCommands(policiesByTable.get(table) ?? [], (pred) => {
+        if (!pred) return false;
+        const text = pred.toLowerCase();
+        return columns.every((col) => text.includes(col.toLowerCase()));
+      });
+      const missing = requiredCmdsFor(table).filter((cmd) => !covered.has(cmd));
+      if (missing.length > 0) offenders.push({ table, missing_cmds: missing });
+    }
+
+    expect(
+      offenders,
+      `Multi-FK child tables whose policies do not reference every tenant-bearing FK column:\n` +
+        `${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Fix: AND one EXISTS-through-the-parent branch per FK column, in USING for SELECT/DELETE, ` +
+        `WITH CHECK for INSERT, and BOTH for UPDATE — e.g. ` +
+        `EXISTS (SELECT 1 FROM alerts p WHERE p.id = alert_correlations.parent_alert_id AND breeze_has_org_access(p.org_id)) ` +
+        `AND EXISTS (SELECT 1 FROM alerts c WHERE c.id = alert_correlations.child_alert_id AND breeze_has_org_access(c.org_id)). ` +
+        `Shape reference: 2026-10-16-170100-alert-correlations-child-org-rls.sql.`
     ).toEqual([]);
   });
 
@@ -4529,6 +4694,17 @@ describe('m365 communications-delegated RLS — structural enforcement', () => {
 // they guard against an over-tight policy; every negative row is RED on main.
 describe('script_versions / script_to_tags RLS — parent-join forge enforcement (Org A/B, Partner A/B)', () => {
   const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // Execution-definition columns are NOT NULL since
+  // 2026-10-16-100000-script-versions-immutable.sql; the values are irrelevant
+  // to the RLS forge, only their presence.
+  const versionDef = {
+    language: 'powershell' as const,
+    timeoutSeconds: 300,
+    runAs: 'system' as const,
+    parameters: null,
+    contentDigest: 'f'.repeat(64),
+    origin: 'human' as const,
+  };
   let partnerAId: string;
   let partnerBId: string;
   let orgA1Id: string;
@@ -4584,8 +4760,8 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
 
       // created_by is nullable (0001-baseline.sql:5216) — no users rows needed.
       const seededVersions = await db.insert(scriptVersions).values([
-        { scriptId: sSysId, version: 1, content: 'echo sys-v1', changelog: 'seed', createdBy: null },
-        { scriptId: sPAId, version: 1, content: 'echo pa-v1', changelog: 'seed', createdBy: null },
+        { ...versionDef, scriptId: sSysId, version: 1, content: 'echo sys-v1', changelog: 'seed', createdBy: null },
+        { ...versionDef, scriptId: sPAId, version: 1, content: 'echo pa-v1', changelog: 'seed', createdBy: null },
       ]).returning({ id: scriptVersions.id });
       vSysId = seededVersions[0]!.id;
       vPAId = seededVersions[1]!.id;
@@ -4596,7 +4772,11 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
     if (!partnerAId) return;
     await withSystemDbAccessContext(async () => {
       const scriptIds = [sA1Id, sB1Id, sPAId, sSysId];
-      await db.delete(scriptVersions).where(inArray(scriptVersions.scriptId, scriptIds));
+      // script_versions rows are append-only as of
+      // 2026-10-16-100000-script-versions-immutable.sql — there is no DELETE
+      // policy, so an explicit delete matches zero rows even under system
+      // scope. The `delete(scripts)` below reaps them through
+      // script_versions_script_id_scripts_id_fk ON DELETE CASCADE.
       await db.delete(scriptToTags).where(inArray(scriptToTags.scriptId, scriptIds));
       await db.delete(scripts).where(inArray(scripts.id, scriptIds));
       await db.delete(scriptTags).where(inArray(scriptTags.id, [tA1Id, tB1Id, tPAId]));
@@ -4639,7 +4819,7 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
   it('org A1 can INSERT and SELECT a version of its own script', async () => {
     await ensureFixtures();
     const inserted = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
-      db.insert(scriptVersions).values({ scriptId: sA1Id, version: 1, content: 'echo a1-v1', changelog: 'org A1', createdBy: null }).returning({ id: scriptVersions.id })
+      db.insert(scriptVersions).values({ ...versionDef, scriptId: sA1Id, version: 1, content: 'echo a1-v1', changelog: 'org A1', createdBy: null }).returning({ id: scriptVersions.id })
     );
     expect(inserted).toHaveLength(1);
     vA1Id = inserted[0]!.id;
@@ -4671,7 +4851,7 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
     await ensureFixtures();
     await expectRlsViolation('script_versions', () =>
       withDbAccessContext(orgContext(orgB1Id, partnerBId), async () =>
-        db.insert(scriptVersions).values({ scriptId: sA1Id, version: 9, content: 'forged', changelog: null, createdBy: null })
+        db.insert(scriptVersions).values({ ...versionDef, scriptId: sA1Id, version: 9, content: 'forged', changelog: null, createdBy: null })
       )
     );
   });
@@ -4719,7 +4899,7 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
     expect(visible).toEqual([]);
     await expectRlsViolation('script_versions', () =>
       withDbAccessContext(partnerContext(partnerBId), async () =>
-        db.insert(scriptVersions).values({ scriptId: sPAId, version: 9, content: 'forged', changelog: null, createdBy: null })
+        db.insert(scriptVersions).values({ ...versionDef, scriptId: sPAId, version: 9, content: 'forged', changelog: null, createdBy: null })
       )
     );
   });
@@ -4728,7 +4908,7 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
   it('partner A can INSERT a version and a link on its own partner-wide script', async () => {
     await ensureFixtures();
     const inserted = await withDbAccessContext(partnerContext(partnerAId), async () =>
-      db.insert(scriptVersions).values({ scriptId: sPAId, version: 2, content: 'echo pa-v2', changelog: 'partner A', createdBy: null }).returning({ id: scriptVersions.id })
+      db.insert(scriptVersions).values({ ...versionDef, scriptId: sPAId, version: 2, content: 'echo pa-v2', changelog: 'partner A', createdBy: null }).returning({ id: scriptVersions.id })
     );
     expect(inserted).toHaveLength(1);
     await withDbAccessContext(partnerContext(partnerAId), async () => db.insert(scriptToTags).values({ scriptId: sPAId, tagId: tPAId }));
@@ -4745,7 +4925,7 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
     expect(visible.map((r) => r.id)).toEqual([vPAId]);
     await expectRlsViolation('script_versions', () =>
       withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
-        db.insert(scriptVersions).values({ scriptId: sPAId, version: 9, content: 'forged', changelog: null, createdBy: null })
+        db.insert(scriptVersions).values({ ...versionDef, scriptId: sPAId, version: 9, content: 'forged', changelog: null, createdBy: null })
       )
     );
   });
@@ -4787,12 +4967,12 @@ describe('script_versions / script_to_tags RLS — parent-join forge enforcement
     await ensureFixtures();
     await expectRlsViolation('script_versions', () =>
       withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
-        db.insert(scriptVersions).values({ scriptId: sSysId, version: 9, content: 'forged', changelog: null, createdBy: null })
+        db.insert(scriptVersions).values({ ...versionDef, scriptId: sSysId, version: 9, content: 'forged', changelog: null, createdBy: null })
       )
     );
     await expectRlsViolation('script_versions', () =>
       withDbAccessContext(partnerContext(partnerAId), async () =>
-        db.insert(scriptVersions).values({ scriptId: sSysId, version: 9, content: 'forged', changelog: null, createdBy: null })
+        db.insert(scriptVersions).values({ ...versionDef, scriptId: sSysId, version: 9, content: 'forged', changelog: null, createdBy: null })
       )
     );
   });

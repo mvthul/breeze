@@ -15,7 +15,7 @@ import { devices, deviceMetrics, deviceSessions, deviceBootMetrics, metricRollup
 import { eq, and, desc, gte, inArray, SQL, sql } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { SITE_SCOPE_EMPTY_NOTE , runFrozenDeviceIds } from './aiToolsSiteScope';
 import {
   mergeBootRecords,
   parseCollectorBootMetricsFromCommandResult,
@@ -24,6 +24,7 @@ import {
   normalizeStartupItems,
   resolveStartupItem,
 } from './startupItems';
+import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 type MetricPoint = {
@@ -88,12 +89,6 @@ async function verifyDeviceAccess(
       error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
     };
   return { device };
-}
-
-let _commandQueue: typeof import('./commandQueue') | null = null;
-async function getCommandQueue() {
-  if (!_commandQueue) _commandQueue = await import('./commandQueue');
-  return _commandQueue;
 }
 
 function computeStats(values: number[]): { min: number; max: number; avg: number; current: number } {
@@ -397,6 +392,10 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       // Site is an app-layer authz axis only (RLS does not cover it) — join
       // devices and narrow by siteId for a site-restricted caller.
       if (isSiteRestricted) conditions.push(inArray(devices.siteId, auth.allowedSiteIds!));
+      // W04 (#5715): the device-LESS analysis run's frozen set — it has no site
+      // axis, so the narrowing above does nothing for it.
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
       // The per-device fold runs in Postgres, not here. Selecting raw rollup
       // rows materialized (org devices) x (buckets in window) — a 168h window
@@ -772,9 +771,8 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       let collectionFailed = false;
       let freshBootRecord: ReturnType<typeof parseCollectorBootMetricsFromCommandResult> = null;
       if (triggerCollection && device.status === 'online') {
-        const { executeCommand } = await getCommandQueue();
         try {
-          const commandResult = await executeCommand(deviceId, 'collect_boot_performance', {}, {
+          const commandResult = await aiExecuteCommand(auth, 'analyze_boot_performance', deviceId, 'collect_boot_performance', {}, {
             userId: auth.user.id,
             timeoutMs: 15000,
           });
@@ -972,8 +970,9 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       // an error in this case.
 
       // Send command to agent
-      const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(
+      const result = await aiExecuteCommand(
+        auth,
+        'manage_startup_items',
         deviceId,
         'manage_startup_item',
         { itemName: item.name, itemType: item.type, itemPath: item.path, itemId: item.itemId, action, reason },

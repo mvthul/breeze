@@ -1,3 +1,5 @@
+import type { ServiceTileDto } from './portalService';
+
 export type TileStatus =
   | 'ok'
   | 'no_data'
@@ -99,6 +101,9 @@ export interface DashboardDto {
   support: SupportTileDto;
   actionItems: ActionItemsTileDto;
   awaitingYou: AwaitingYouTileDto;
+  /** Service deliverables W04: present only when the org's enable_service flag
+   *  is on, so a portal that never enabled it keeps its previous payload. */
+  service?: ServiceTileDto;
 }
 
 export interface SecurityTrendPoint {
@@ -241,7 +246,10 @@ export interface SlaDto {
 export interface PortalRunDto {
   id: string;
   reportId: string;
-  type: 'security_compliance_posture' | 'executive_summary';
+  type:
+    | 'security_compliance_posture'
+    | 'executive_summary'
+    | 'hardware_lifecycle';
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: string | null;

@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "Activité de l'IA",
+    "count": "{{count}} actions envoyées au cours des {{days}} derniers jours",
+    "tooltip": "Comptabilise les scripts et commandes envoyés par l'IA enregistrés sur cet appareil. Une annulation compte comme une action distincte. Enregistré de façon raisonnable, sans garantie d'exhaustivité."
+  },
   "deviceChangeHistoryTab": {
     "title": "Historique des modifications",
     "loading": "Chargement de l'historique des modifications…",
@@ -278,7 +283,21 @@
     "loadMore": "Chargez plus",
     "couldnTLoadMore": "Je ne pouvais pas charger plus.",
     "viewAllActivity2": "Voir toute l’activité",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Voir la proposition",
+    "trigger": {
+      "manual": "Déclenchement manuel",
+      "schedule": "Planification",
+      "sweep_finding": "Constat du balayage",
+      "alert": "Alerte",
+      "monitor": "Surveillance",
+      "fleet_finding": "Constat du parc",
+      "policy": "Stratégie",
+      "automation": "Automatisation",
+      "ticket": "Demande de soutien",
+      "anomaly": "Anomalie",
+      "api": "Appel API"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Impossible de récupérer l’historique des alertes",
@@ -930,6 +949,23 @@
     "role": "Rôle",
     "changeRole": "Changement de rôle",
     "source": "Source",
+    "function": "Fonction",
+    "changeFunction": "Changement de fonction",
+    "functionNone": "Non évaluée",
+    "functionSource": {
+      "ai": "IA",
+      "manual": "Manuel"
+    },
+    "functionConfidence": "{{pct}} % confiance",
+    "functionEvidence": "Pourquoi le concepteur pense cela",
+    "functionEvidenceUnavailable": "Impossible de charger les détails de l’évaluation.",
+    "functionCustom": "Personnalisé…",
+    "functionCustomSlug": "clé personnalisée (a-z, 0-9, -)",
+    "functionCustomLabel": "Libellé",
+    "functionClear": "Effacer",
+    "functionSaved": "Fonction de l’appareil enregistrée",
+    "functionCleared": "Fonction de l’appareil effacée",
+    "functionSaveFailed": "Impossible d’enregistrer la fonction de l’appareil",
     "operatingSystem": "Système d’exploitation",
     "osType": "Type de système d’exploitation",
     "osVersion": "Version du système d’exploitation",
@@ -1269,6 +1305,9 @@
     "tenantId": "Locataire ID :",
     "mdmEnrollment": "Inscription au MDM :",
     "detectionSource": "Source de détection :",
+    "identityDetectionUnsupported": "Détection de jonction non prise en charge",
+    "identityDetectionUnsupportedHint": "Breeze ne vérifie pas encore l'annuaire ni l'inscription Intune/Entra sur le système d'exploitation de cet appareil. Son état de jonction est donc inconnu et n'a pas été confirmé comme non joint.",
+    "flagUnknown": "{{label}} : Inconnu",
     "detectedManagementTools": "Outils de gestion détectés",
     "tool": "outil",
     "s": "s",
@@ -1676,7 +1715,10 @@
     "saveChanges": "Enregistrer les modifications",
     "site": "Site",
     "tags": "Étiquettes",
-    "title": "Paramètres de l’appareil"
+    "title": "Paramètres de l’appareil",
+    "purchaseDate": "Date d’achat",
+    "purchaseDateHelp": "Utilisée par le rapport de cycle de vie du matériel pour planifier le remplacement.",
+    "purchaseDateVendorHint": "Issue de la date d’expédition du fabricant. Saisissez une date pour la remplacer."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -1876,7 +1918,7 @@
     "refresh": "Actualiser",
     "selectedOrganization": "L’organisation sélectionnée",
     "subtitle": "Gérez et surveillez votre flotte.",
-    "title": "Dispositifs",
+    "title": "Dispositifs et actifs",
     "toasts": {
       "actionFailed": "{{action}} a échoué sur {{hostname}}",
       "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",
@@ -2769,7 +2811,8 @@
       "assignedContactPlaceholder": "Rechercher des contacts…",
       "tags": "Étiquettes",
       "tagsPlaceholder": "Séparées par des virgules",
-      "notes": "Notes"
+      "notes": "Notes",
+      "purchaseDate": "Date d’achat"
     }
   },
   "addNetworkAssetModal": {

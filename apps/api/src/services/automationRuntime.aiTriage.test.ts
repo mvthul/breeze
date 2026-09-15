@@ -57,6 +57,20 @@ const EXPECTED_OUTCOME: Record<AgentRunSkipReason, 'succeeded' | 'failed'> = {
   narrative_rate: 'succeeded',
   max_concurrent_triage_runs: 'succeeded',
   triage_rate: 'succeeded',
+  max_concurrent_design_runs: 'succeeded',
+  design_rate: 'succeeded',
+  max_concurrent_patch_runs: 'succeeded',
+  patch_rate: 'succeeded',
+  analysis_not_available: 'succeeded',
+  external_processing_disabled: 'succeeded',
+  workspace_capability_missing: 'succeeded',
+  analysis_region_unavailable: 'succeeded',
+  max_concurrent_analysis_runs: 'succeeded',
+  analysis_rate: 'succeeded',
+  compute_budget_exceeded: 'succeeded',
+  compute_credits_exhausted: 'succeeded',
+  too_many_input_devices: 'succeeded',
+  workspace_unavailable: 'succeeded',
   ownership_mismatch: 'failed',
   device_not_in_org: 'failed',
 };
@@ -169,7 +183,14 @@ describe('executeAiTriageAction', () => {
       },
       dedupeKey: 'alert:alert-1',
     });
-    expect(result.outcome.status).toBe('succeeded');
+    // #5290 — a queued child run is NOT a completed action. The action stays
+    // nonterminal and carries the correlation the ai.agent.run.* events use to
+    // terminalise it.
+    expect(result.outcome).toEqual({
+      status: 'queued',
+      agentRunId: 'agent-run-1',
+      message: 'ai_triage queued agent run',
+    });
     expect(result.log.message).toBe('ai_triage queued agent run');
     expect(result.log.details).toEqual({ agentRunId: 'agent-run-1' });
   });
@@ -325,7 +346,11 @@ describe('executeAiTriageAction', () => {
       makeContext(),
     );
 
-    expect(result.outcome.status).toBe('succeeded');
+    expect(result.outcome).toEqual({
+      status: 'queued',
+      agentRunId: 'agent-run-3',
+      message: 'ai_triage queued agent run',
+    });
     expect(result.log.message).toBe('ai_triage queued agent run');
   });
 

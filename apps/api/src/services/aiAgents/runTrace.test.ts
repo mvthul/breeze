@@ -929,4 +929,144 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       expect(detail.reportRunId).toBeNull();
     });
   });
+
+  // ---------------------------------------------------------------------
+  // Fleet Designer W01 (#5651), Task 9 — the design run projection.
+  // ---------------------------------------------------------------------
+  describe('design run projection (W01)', () => {
+    const SCHEDULE_ID = '77777777-7777-4777-8777-777777777777';
+    const REPORT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const REPORT_RUN_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+    function fleetDesignOutcome(overrides: Record<string, unknown> = {}) {
+      return {
+        schemaVersion: 1,
+        generatedAt: '2026-09-12T07:00:00.000Z',
+        markdown: '# Fleet Design',
+        thresholds: { confidence: 0.6, precursors: {} },
+        sections: {
+          found: { summary: [], findings: [] },
+          functions: [
+            { functionKey: 'file_server', deviceIds: ['dev-1'], confidence: 0.9, evidence: [] },
+            { functionKey: 'domain_controller', deviceIds: ['dev-2'], confidence: 0.8, evidence: [] },
+          ],
+          monitoring: [],
+          retired: [],
+          automation: [],
+          legacy: [],
+          baseline: { notes: [], numbers: { alertsPer100EndpointsPerMonth: null, ticketsPerMonth: null, precursors: [] } },
+          unsure: { lowConfidenceFunctions: [], unreachableDevices: [], needsHuman: [], roleCorrections: [] },
+        },
+        ...overrides,
+      };
+    }
+
+    it('projects functionCount and reportRunId for a design run', () => {
+      const detail = buildRunTrace(
+        baseRun({
+          deviceId: null,
+          triggerKind: 'schedule',
+          scheduleId: SCHEDULE_ID,
+          reportRunId: REPORT_RUN_ID,
+          outcome: {
+            fleetDesign: fleetDesignOutcome(),
+            fleetDesignReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+          } as never,
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+        new Map(),
+        null,
+        [],
+        { reportId: REPORT_ID, generatedAt: '2026-09-12T07:00:00.000Z', evidenceTruncated: false },
+      );
+
+      expect(detail.reportRunId).toBe(REPORT_RUN_ID);
+      expect(detail.fleetDesign).toMatchObject({
+        reportRunId: REPORT_RUN_ID,
+        reportId: REPORT_ID,
+        functionCount: 2,
+      });
+    });
+
+    it('projects null fleetDesign for every non-design run', () => {
+      const detail = buildRunTrace(baseRun(), AGENT, DEVICE, [], []);
+
+      expect(detail.fleetDesign).toBeNull();
+    });
+  });
+});
+
+describe('buildRunTrace — patch plan (AI patch agent W01)', () => {
+  const D = '00000000-0000-4000-8000-0000000000d1';
+  it('projects the patch plan with hostnames and dispositions, and null for every other run', () => {
+    const run = {
+      ...baseRun(),
+      profile: 'patch',
+      deviceId: null,
+      scheduleId: null,
+      outcome: {
+        proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
+        patchPlan: {
+          schemaVersion: 1, summary: 'One device behind.', posture: { compliancePct: 90, devicesAtRisk: 1, oldestOutstandingDays: 12 },
+          items: [{ class: 'install', severity: 'high', deviceId: D, patchIds: ['p'], title: 'Install', detail: 'why', evidenceRef: 'e' }],
+          dispositions: [{ index: 0, class: 'install', deviceId: D, disposition: 'recorded' }],
+          evidenceTruncated: false, generatedAt: '2026-09-14T02:00:00.000Z',
+        },
+      },
+    } as unknown as Parameters<typeof buildRunTrace>[0];
+    const detail = buildRunTrace(run, AGENT, null, [], [], new Map([[D, 'WS-01']]));
+    expect(detail.patch).toMatchObject({ summary: 'One device behind.', recordedCount: 1 });
+    expect(detail.patch!.items[0]).toMatchObject({ deviceHostname: 'WS-01', disposition: 'recorded' });
+    expect(detail.findingsToReview).toBe(1);
+    expect(buildRunTrace(baseRun(), AGENT, DEVICE, [], []).patch).toBeNull();
+  });
+});
+
+describe('buildRunTrace — analysis projection (execution plane W04)', () => {
+  const HANDLE = '66666666-6666-4666-8666-666666666666';
+
+  it('projects the analysis outcome and the compute numbers', () => {
+    const detail = buildRunTrace(
+      baseRun({
+        deviceId: null,
+        computeCents: 13,
+        outcome: {
+          analysis: {
+            summary: 'three devices share a failing disk model',
+            findings: [{
+              title: 'SMART pre-fail on 3 devices',
+              severity: 'high',
+              detail: 'reallocated sector count climbing',
+              artifactHandles: [HANDLE],
+            }],
+            artifactHandles: [HANDLE],
+            proposedActions: [{
+              tool: 'manage_alerts', args: { alertId: 'a1' }, rationale: 'superseded',
+            }],
+          },
+          computeUsageEstimated: true,
+        },
+      }),
+      AGENT,
+      null,
+      [],
+      [],
+    );
+    expect(detail.analysis?.artifactHandles).toEqual([HANDLE]);
+    expect(detail.analysis?.findings[0]?.severity).toBe('high');
+    expect(detail.analysis?.proposedActions).toHaveLength(1);
+    expect(detail.computeCents).toBe(13);
+    expect(detail.computeUsageEstimated).toBe(true);
+  });
+
+  it('leaves analysis null and compute zero for a non-analysis run', () => {
+    const detail = buildRunTrace(baseRun(), AGENT, DEVICE, [], []);
+    expect(detail.analysis).toBeNull();
+    expect(detail.computeCents).toBe(0);
+    // Absent flag reads false, never undefined — the UI branches on it.
+    expect(detail.computeUsageEstimated).toBe(false);
+  });
 });

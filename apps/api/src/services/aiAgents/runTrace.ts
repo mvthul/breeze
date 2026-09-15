@@ -24,9 +24,11 @@ import type {
   TicketProposalOutcome,
 } from './runLoop';
 import { projectAlertVerdict } from './alertVerdicts';
+import { projectFleetDesign } from './fleetDesignReport';
 import { projectNarrative } from './narrativeReport';
 import { countFindingsToReview } from './runFindings';
 import { projectSweep } from './sweepFindings';
+import { projectPatch } from './patchPlan';
 import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
   type AiAgentKind,
@@ -34,12 +36,14 @@ import {
   type AiAgentRunDetailDto,
   type AiAgentRunIntentSummaryDto,
   type AiAgentRunLedgerEntryDto,
+  type AiAgentRunNarrativeDeliveryDto,
   type AiAgentRunStatus,
   type AiAgentRunTicketProposalDto,
   type AiAgentRunTraceEntryDto,
   type AiAgentTriggerKind,
   type AiToolStatus,
   type TicketTriageSkip,
+  AnalysisOutcomeDto,
 } from '@breeze/shared';
 
 export interface RunTraceRunInput {
@@ -75,6 +79,12 @@ export interface RunTraceRunInput {
    * never committed.
    */
   reportRunId: string | null;
+  /**
+   * Execution plane W04 — `ai_agent_runs.compute_cents`, the settled sandbox
+   * charge. `null`/absent for every run that never built a workspace, which
+   * the projection reads as 0.
+   */
+  computeCents?: number | null;
   /**
    * The raw `ai_agent_runs.outcome` jsonb column — typed `Record<string,
    * unknown>` at the schema layer (see aiAgents.ts) because Postgres jsonb
@@ -140,6 +150,20 @@ export interface RunTraceNarrativeArtifactInput {
   periodStart: string | null;
   periodEnd: string | null;
   contextTruncated: boolean;
+}
+
+/**
+ * Fleet Designer W01 (#5651), Task 9 — the scalars the design DTO needs off
+ * the linked `report_runs` artifact, projected out of its stored jsonb by
+ * Postgres (`fleetDesignArtifactProjection`, fleetDesignReport.ts) so the
+ * route never drags the whole result document — the full outcome, scripts
+ * included — across the wire to read them. `null` when the run links no
+ * artifact. Direct sibling of `RunTraceNarrativeArtifactInput` above.
+ */
+export interface RunTraceFleetDesignArtifactInput {
+  reportId: string | null;
+  generatedAt: string | null;
+  evidenceTruncated: boolean;
 }
 
 /**
@@ -297,7 +321,7 @@ function pickDraftText(
   return written ? written.content : proposalText;
 }
 
-function mapTicketProposal(
+export function mapTicketProposal(
   proposal: TicketProposalOutcome,
   intentIds: string[],
   draftRows: RunTraceDraftRowInput[],
@@ -388,7 +412,20 @@ export function buildRunTrace(
   // unchanged; see `RunTraceDraftRowInput`'s docstring for why this is a live
   // query rather than something read off the persisted outcome.
   draftRows: RunTraceDraftRowInput[] = [],
-): AiAgentRunDetailDto {
+  // Fleet Designer W01 (#5651), Task 9 — the linked design report artifact's
+  // scalars, or `null` for every run that has none. Defaults null so every
+  // existing caller is unchanged.
+  fleetDesignArtifact: RunTraceFleetDesignArtifactInput | null = null,
+  // #4248 W03 (Task 10) — the narrative's email delivery counts, or `null`
+  // for every run that produced no narrative artifact. Defaults null so every
+  // existing caller is unchanged.
+  narrativeDelivery: AiAgentRunNarrativeDeliveryDto | null = null,
+  // `progress` is intentionally NOT a parameter here: it is read from the
+  // live Redis ring (`readRunProgress`, W03) by the route, not assembled
+  // from persisted run state like everything else this function builds.
+  // The route merges it in after calling this function (see
+  // routes/aiAgents.ts GET /runs/:runId).
+): Omit<AiAgentRunDetailDto, 'progress'> {
   const outcome = run.outcome as Partial<AgentRunOutcome>;
   return {
     schemaVersion: AI_AGENT_RUN_DTO_SCHEMA_VERSION,
@@ -452,5 +489,27 @@ export function buildRunTrace(
     // know "is there a downloadable artifact" doesn't have to reach through a
     // nullable sub-object. Read from the typed COLUMN, not the outcome jsonb.
     reportRunId: run.reportRunId ?? null,
+    // Fleet Designer W01 (#5651), Task 9: null for every non-design run and
+    // for a design run that produced nothing — see `projectFleetDesign`'s
+    // own safe-projection contract. The bounded `DesignEvidence` bundle the
+    // run was built from is never carried here (nor persisted at all); the
+    // derived markdown is deliberately left out too, since the detail view
+    // renders the structured sections itself.
+    fleetDesign: projectFleetDesign(run, outcome, fleetDesignArtifact),
+    // AI patch agent W01 (#5747): null for every non-patch run and for a
+    // patch run that produced no plan — see `projectPatch`'s safe-projection
+    // contract. The raw patch/job-result id lists never reach the wire.
+    // Hostnames ride the same batched map the sweep uses.
+    patch: projectPatch(run, outcome, deviceHostnames),
+    // Execution plane W04 (#5715): null for every non-analysis run and for an
+    // analysis run that never submitted. Read DEFENSIVELY — `outcome` is
+    // jsonb, and a row from before this wave simply lacks the key.
+    analysis: (outcome?.analysis as AnalysisOutcomeDto | undefined) ?? null,
+    // Stamped by `finalizeWorkspaceForRun`. `run.computeCents` is W02's
+    // column; a run that never built a sandbox reads 0.
+    computeCents: Number(run.computeCents ?? 0) || 0,
+    computeUsageEstimated: outcome?.computeUsageEstimated === true,
+    // #4248 W03: counts only, never a recipient — see the DTO docstring.
+    narrativeDelivery,
   };
 }

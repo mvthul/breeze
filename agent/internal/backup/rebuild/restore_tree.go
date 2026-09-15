@@ -38,7 +38,7 @@ func mountTree(ctx context.Context, r *run) error {
 		if fstype == "fat32" {
 			fstype = "vfat"
 		}
-		if err := r.sys.Mount(ctx, r.sys.PartitionDevice(r.disk, p.Number), dir, fstype); err != nil {
+		if err := mountWithBusyRetry(ctx, r.sys, r.sys.PartitionDevice(r.disk, p.Number), dir, fstype); err != nil {
 			return err
 		}
 		if p.MountPoint == "/" {
@@ -86,6 +86,14 @@ func restoreTree(ctx context.Context, r *run) error {
 		for _, f := range res.FailedFiles {
 			r.failedFiles[f] = true
 		}
+	}
+	// Belt-and-braces (#5493): run this even when boot() will be skipped
+	// (Options.SkipBoot) — boot() is the phase that actually bind-mounts
+	// /proc, /sys, /dev, /run, but a SkipBoot run still produces a staging
+	// tree that must be a bootable disk image, so the mount points must
+	// exist regardless of whether boot() itself runs.
+	if err := ensureMountpoints(r.staging); err != nil {
+		return fmt.Errorf("ensure mount points: %w", err)
 	}
 	if r.stateStaging != "" {
 		if entries, _ := os.ReadDir(r.stateStaging); len(entries) > 0 {

@@ -124,7 +124,7 @@ const CATALOG: AgentToolCatalogDto = {
       operations: [{ key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false }],
     },
   ],
-  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
+  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
   unreachableTools: ['manage_ai_agents'],
 };
 
@@ -511,6 +511,25 @@ describe('AiAgentForm — renders the create flow\'s step components (#5063)', (
     expect(screen.getByTestId('ai-agent-kind')).toBeDisabled();
     expect(screen.getByTestId('ai-agent-enabled')).toBeInTheDocument();
     expect(screen.getByTestId('ai-agent-disable')).toBeInTheDocument();
+  });
+});
+
+// AI patch agent W01 (#5747) — the schedules section is gated on the STORED
+// agent kind, and `patch` is the third schedulable one.
+describe('AiAgentForm — schedules section gate', () => {
+  it('renders the schedules section for a patch agent', async () => {
+    mockEndpoints();
+    renderForm({ agent: makeAgent({ kind: 'patch', ownerScope: 'partner' }) });
+
+    expect(await screen.findByTestId('ai-agent-schedules')).toBeInTheDocument();
+  });
+
+  it('still hides it for a help desk agent', async () => {
+    mockEndpoints();
+    renderForm({ agent: makeAgent({ kind: 'helpdesk', ownerScope: 'partner', triggers: { respectMaintenanceWindows: true } }) });
+
+    await screen.findByTestId('ai-agent-permissions');
+    expect(screen.queryByTestId('ai-agent-schedules')).toBeNull();
   });
 });
 

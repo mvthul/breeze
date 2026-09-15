@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "AI activity",
+    "count": "{{count}} actions dispatched in the last {{days}} days",
+    "tooltip": "Counts AI-dispatched scripts and commands recorded on this device. A cancel counts as its own action. Recorded on a best-effort basis."
+  },
   "deviceChangeHistoryTab": {
     "title": "Change History",
     "loading": "Loading change history…",
@@ -278,7 +283,21 @@
     "loadMore": "Load more",
     "couldnTLoadMore": "Couldn't load more.",
     "viewAllActivity2": "View all activity",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "View proposal",
+    "trigger": {
+      "manual": "Manual",
+      "schedule": "Schedule",
+      "sweep_finding": "Sweep finding",
+      "alert": "Alert",
+      "monitor": "Monitor",
+      "fleet_finding": "Fleet finding",
+      "policy": "Policy",
+      "automation": "Automation",
+      "ticket": "Ticket",
+      "anomaly": "Anomaly",
+      "api": "API"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Failed to fetch alert history",
@@ -930,6 +949,23 @@
     "role": "Role",
     "changeRole": "Change role",
     "source": "Source",
+    "function": "Function",
+    "changeFunction": "Change function",
+    "functionNone": "Not assessed",
+    "functionSource": {
+      "ai": "AI",
+      "manual": "Manual"
+    },
+    "functionConfidence": "{{pct}}% confidence",
+    "functionEvidence": "Why the designer thinks so",
+    "functionEvidenceUnavailable": "Could not load the assessment details.",
+    "functionCustom": "Custom…",
+    "functionCustomSlug": "custom key (a-z, 0-9, -)",
+    "functionCustomLabel": "Label",
+    "functionClear": "Clear",
+    "functionSaved": "Device function saved",
+    "functionCleared": "Device function cleared",
+    "functionSaveFailed": "Failed to save device function",
     "operatingSystem": "Operating System",
     "osType": "OS Type",
     "osVersion": "OS Version",
@@ -1269,6 +1305,9 @@
     "tenantId": "Tenant ID:",
     "mdmEnrollment": "MDM Enrollment:",
     "detectionSource": "Detection source:",
+    "identityDetectionUnsupported": "Join Detection Not Supported",
+    "identityDetectionUnsupportedHint": "Breeze does not yet check directory or Intune/Entra enrollment on this device's operating system, so its join status is unknown — it has not been confirmed as unjoined.",
+    "flagUnknown": "{{label}}: Unknown",
     "detectedManagementTools": "Detected Management Tools",
     "tool": "tool",
     "s": "s",
@@ -1676,7 +1715,10 @@
     "saveChanges": "Save Changes",
     "site": "Site",
     "tags": "Tags",
-    "title": "Device Settings"
+    "title": "Device Settings",
+    "purchaseDate": "Purchase date",
+    "purchaseDateHelp": "Used by the Hardware Lifecycle report to plan replacement.",
+    "purchaseDateVendorHint": "Set from the manufacturer’s ship date. Enter a date to override it."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -1881,7 +1923,7 @@
     "refresh": "Refresh",
     "selectedOrganization": "the selected organization",
     "subtitle": "Manage and monitor your fleet.",
-    "title": "Devices",
+    "title": "Devices & Assets",
     "toasts": {
       "actionFailed": "{{action}} failed on {{hostname}}",
       "advancedFilterFailed": "Advanced filter failed to load — showing no devices. Edit or clear the filter to try again.",
@@ -2769,7 +2811,8 @@
       "assignedContactPlaceholder": "Search contacts…",
       "tags": "Tags",
       "tagsPlaceholder": "Comma-separated",
-      "notes": "Notes"
+      "notes": "Notes",
+      "purchaseDate": "Purchase date"
     }
   },
   "addNetworkAssetModal": {

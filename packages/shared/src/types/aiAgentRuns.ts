@@ -1,4 +1,6 @@
 import type { AiApprovalScope, AiToolStatus } from './ai';
+import type { AiAgentRunFleetDesignDto } from './fleetDesign';
+import type { AiAgentRunPatchDto } from './aiPatchPlan';
 import type {
   ActExecutionVerdict,
   ActVerificationVerdict,
@@ -13,7 +15,23 @@ import type {
 } from './aiAgents';
 import type { AiSweepKind, AiSweepSeverity } from './aiAgentSchedules';
 import type { AiAgentRunNarrativeDto } from './orgNarrativeReport';
+import type { AnalysisFinding, AnalysisProposedAction } from './aiAgents';
 import type { TicketTriageProposal } from './ticketTriage';
+
+/**
+ * Execution plane W04 — the run-detail projection of `AnalysisOutcome`
+ * (`types/aiAgents.ts`). Structurally identical today and deliberately its
+ * own name: the outcome type is the MODEL's contract (validated by
+ * `analysisOutcomeSchema`), this one is the CLIENT's, and the two are free to
+ * diverge — W05 adds the resolved artifact list and the workspace step
+ * transcript to the client side without touching what the model may submit.
+ */
+export interface AnalysisOutcomeDto {
+  summary: string;
+  findings: AnalysisFinding[];
+  artifactHandles: string[];
+  proposedActions: AnalysisProposedAction[];
+}
 
 /**
  * Wave 6 PR 1 (#3828) — the execution-trace DTOs: what `GET /ai/agents/runs`
@@ -403,9 +421,22 @@ export type AlertVerdictSuggestionDisposition = 'intent_created' | 'not_created'
  * verdict that lost the race. See `alertVerdicts.ts`'s write-ordering
  * docstring for the full mechanism (deferred self-FK + 23505 handling).
  */
+/**
+ * `'intent_invalid_provenance'` — `createActionIntent`'s
+ * `remediationTriggerSchema.parse(...)` rejected the `trigger` this file
+ * built (a `ZodError`). That is a code defect in the caller, never a
+ * business-outcome denial, so it is reported to Sentry and kept distinct
+ * from `'intent_error'` (a genuinely-thrown business error, e.g.
+ * `org_resolution_failed`).
+ */
 export type AlertVerdictSuggestionReason =
   | 'low_confidence' | 'target_mismatch' | 'alert_not_found' | 'no_eligible_approvers' | 'intent_error'
-  | 'not_allowlisted' | 'superseded_concurrently';
+  | 'not_allowlisted' | 'superseded_concurrently'
+  // #5290 — the target is a recurrence-escalation alert. The verdict is still
+  // recorded (advisory analysis is wanted), but the suggested mutation is
+  // refused: a requires-human alert is closed by a person, never by the machine.
+  | 'requires_human'
+  | 'intent_invalid_provenance';
 
 /**
  * Phase 2 wave P2-1 (alert verdicts) — the safe projection of one
@@ -448,7 +479,12 @@ export type SweepProposalReason =
   | 'not_allowlisted'
   | 'no_eligible_approvers'
   | 'intent_error'
-  | 'max_actions_per_run';
+  | 'max_actions_per_run'
+  // `createActionIntent`'s `remediationTriggerSchema.parse(...)` rejected the
+  // `trigger` this file built (a `ZodError`) — a code defect, not a
+  // business-outcome denial. Reported to Sentry; see
+  // `AlertVerdictSuggestionReason`'s matching member for the full rationale.
+  | 'intent_invalid_provenance';
 
 /**
  * Phase 2 wave P2-2 (scheduled sweeps) — the safe projection of one
@@ -489,6 +525,18 @@ export interface AiAgentRunSweepDto {
   summary: string;
   findings: AiAgentRunSweepFindingDto[];
   evidenceTruncated: boolean;
+}
+
+/**
+ * Execution plane W03 (spec §5.8) — one live progress beat published by
+ * `emitRunProgress` and read back by `readRunProgress` (`services/aiAgents/
+ * runProgress.ts`) off the capped Redis ring, never the DB.
+ */
+export interface AiAgentRunProgressEntryDto {
+  step: string;
+  label: string;
+  ordinal: number;
+  at: string;
 }
 
 export interface AiAgentRunDetailDto {
@@ -582,6 +630,90 @@ export interface AiAgentRunDetailDto {
    * Additive nullable field — does NOT bump the DTO schema version.
    */
   reportRunId: string | null;
+  /** Live progress beats (spec §5.8). Always an array — `[]` for a finished
+   *  run whose one-hour window has expired, and for every run from before this
+   *  field existed. Additive: does NOT bump AI_AGENT_RUN_DTO_SCHEMA_VERSION. */
+  progress: AiAgentRunProgressEntryDto[];
+  /**
+   * Fleet Designer (W01) — the report this run produced, for a
+   * `design`-profile run that reached a `submit_fleet_design` outcome. Null
+   * for every non-design run and for a design run that has not produced one.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`
+   * (same rule as `alertVerdict`/`sweep`/`narrative` above).
+   */
+  fleetDesign: AiAgentRunFleetDesignDto | null;
+  /**
+   * AI patch agent (W01) — the patch plan this run produced, for a
+   * `patch`-profile run that reached a `submit_patch_plan` outcome. Null for
+   * every non-patch run and for a patch run that has not produced one.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`
+   * (same rule as `alertVerdict`/`sweep`/`narrative`/`fleetDesign` above).
+   */
+  patch: AiAgentRunPatchDto | null;
+  /**
+   * Execution plane W04 — the outcome an `analysis`-profile run submitted via
+   * `submit_analysis`. Null for every other profile and for an analysis run
+   * that has not produced one. Additive nullable field — does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION` (same rule as the siblings above).
+   *
+   * `proposedActions` inside it are PROPOSALS a technician turns into intents
+   * through the normal approval flow; nothing in the run executed them, and
+   * nothing downstream of this DTO may treat them as approved.
+   */
+  analysis: AnalysisOutcomeDto | null;
+  /**
+   * Execution plane W04 — sandbox compute billed to this run, in cents. 0 for
+   * every run that never created a sandbox (including every non-analysis
+   * profile), which is why it is a plain number rather than nullable: "no
+   * sandbox" and "a sandbox that cost nothing" are the same answer to the
+   * only question the UI asks.
+   */
+  computeCents: number;
+  /**
+   * Execution plane W04 — true when the provider could not report usage and
+   * the run settled at its RESERVATION rather than at measured usage (spec
+   * §9). The run page renders a worst-case 25¢ differently from a measured
+   * 12¢; without this flag the two are indistinguishable and a support
+   * question about a bill has no answer. Always present, `false` for every
+   * run that measured.
+   */
+  computeUsageEstimated: boolean;
+  /**
+   * #4248 W03 (AI Scorecard, OD-7 B) — how the narrative's EMAIL delivery
+   * went, for a `narrative`-profile run that materialised an artifact. Null
+   * for every other run. COUNTS ONLY: a skipped count is a small authority
+   * oracle, acceptable to someone who already holds `ai_agents:read` on the
+   * run; the recipients themselves are never named. Non-null whenever the run
+   * produced an artifact — including with `total: 0`, so a failed recipient
+   * lookup (`recipientsUnresolved`) is still visible.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  narrativeDelivery: AiAgentRunNarrativeDeliveryDto | null;
+}
+
+/** See `AiAgentRunDetailDto.narrativeDelivery`. */
+export interface AiAgentRunNarrativeDeliveryDto {
+  total: number;
+  sent: number;
+  /**
+   * Permanently not delivered. Deliberately NOT called "skipped (insufficient
+   * authority)": the same terminal state is reached by an authority refusal,
+   * by a recipient with no usable address, AND by a hard provider refusal, so
+   * naming one cause would send a technician to investigate permissions when
+   * the real problem is a missing address or a mail-provider error.
+   */
+  refused: number;
+  /** Not delivered YET — still queued or mid-send; the reconciler retries. */
+  pending: number;
+  /** Provider outcome ambiguous — never auto-replayed; a human decision. */
+  unknown: number;
+  /**
+   * The recipient lookup itself failed, so the narrative was stored with ZERO
+   * delivery rows and nobody was emailed. Without this, the run detail cannot
+   * tell that apart from an org that deliberately has no recipients — and the
+   * weekly report reaches nobody in silence.
+   */
+  recipientsUnresolved: boolean;
 }
 
 /**

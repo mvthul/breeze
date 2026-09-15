@@ -54,6 +54,22 @@ vi.mock('../services/scriptCancellation', async (importOriginal) => {
   };
 });
 
+// services/scriptVersions.ts is the sole writer of script_versions; the routes
+// only have to hand it the right scriptId and provenance, which is what these
+// recorded calls assert. The helper's own behaviour (FOR UPDATE, digest,
+// version arithmetic) is covered by services/scriptVersions.test.ts.
+const scriptVersionsH = vi.hoisted(() => ({
+  cuts: [] as Array<{ scriptId: string; provenance: Record<string, unknown> }>,
+  nextVersion: 2,
+}));
+
+vi.mock('../services/scriptVersions', () => ({
+  cutScriptVersion: vi.fn((_tx: unknown, args: { scriptId: string; provenance: Record<string, unknown> }) => {
+    scriptVersionsH.cuts.push(args);
+    return Promise.resolve({ id: 'version-row', scriptId: args.scriptId, version: scriptVersionsH.nextVersion });
+  }),
+}));
+
 vi.mock('../services/auditEvents', () => ({
   requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeRouteAudit: vi.fn()
@@ -102,7 +118,9 @@ vi.mock('../db/schema', () => ({
   // ensureTagIds/linkTags helpers, which key off these two column refs.
   scriptTags: { id: 'stg.id', name: 'stg.name', orgId: 'stg.orgId', partnerId: 'stg.partnerId' },
   scriptToTags: { scriptId: 'stt.scriptId', tagId: 'stt.tagId' },
-  scriptExecutions: {},
+  // Column sentinels the #5040 projection assertions key off; the rest of this
+  // file only needs the object to exist.
+  scriptExecutions: { cancelState: 'se.cancelState' },
   scriptExecutionBatches: {},
   devices: {},
   deviceCommands: {},
@@ -423,10 +441,13 @@ describe('scripts routes', () => {
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
+          // Deliberately carries a STALE version: the response must come from
+          // the cut, not from the pre-cut row. Matching the two would let a
+          // regression to `row.version` pass unnoticed.
           returning: vi.fn().mockResolvedValue([{
             id: SCRIPT_ID_1,
             name: 'Updated Script',
-            version: 2
+            version: 1
           }])
         })
       })
@@ -443,7 +464,7 @@ describe('scripts routes', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.version).toBe(2);
+    expect(body.version).toBe(scriptVersionsH.nextVersion);
   });
 
   // -------------------------------------------------------------------
@@ -1040,6 +1061,33 @@ describe('scripts routes', () => {
       expect(res.status).toBe(201);
       expect(vi.mocked(db.insert)).toHaveBeenCalled();
     });
+
+    // W01a: the clone is a script in its own right and needs its own v1 row,
+    // or headScriptVersion() is null for a live script — unrepairable, since
+    // script_versions is append-only.
+    it('cuts version 1 for the cloned script with a human origin', async () => {
+      scriptVersionsH.cuts = [];
+      let inserted: Record<string, unknown> | undefined;
+      mockClonePreamble(systemSource());
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockImplementation((vals: Record<string, unknown>) => {
+          inserted = vals;
+          return { returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'System Script', orgId: ORG_ID, ...vals }]) };
+        })
+      } as any);
+
+      const res = await clone();
+      expect(res.status).toBe(201);
+      // Inserted at 0 so the cut produces 1; 0 never escapes the transaction.
+      expect(inserted).toMatchObject({ version: 0 });
+      expect(scriptVersionsH.cuts).toHaveLength(1);
+      expect(scriptVersionsH.cuts[0]!.scriptId).toBe(SCRIPT_ID_1);
+      expect(scriptVersionsH.cuts[0]!.provenance).toMatchObject({
+        origin: 'human',
+        changelog: 'Imported from the system library'
+      });
+      expect((await res.json()).version).toBe(scriptVersionsH.nextVersion);
+    });
   });
 
   // -------------------------------------------------------------------
@@ -1162,9 +1210,11 @@ describe('scripts routes', () => {
       expect(getInserted().timeoutSeconds).toBe(300);
       expect(getInserted().runAs).toBe('system');
       expect(getInserted().exitCodeSeverityMapping).toBeNull();
-      // Fresh row: version always starts at 1, never copied from a source
-      // that may have accumulated versions via prior edits.
-      expect(getInserted().version).toBe(1);
+      // Fresh row: never copied from a source that may have accumulated
+      // versions via prior edits. Inserted at 0 and moved to 1 by
+      // cutScriptVersion inside the same transaction (W01a), so 0 is never
+      // observable outside it.
+      expect(getInserted().version).toBe(0);
     });
 
     it('does NOT copy the source script\u2019s security acknowledgements (#5129)', async () => {
@@ -1728,6 +1778,102 @@ describe('scripts routes', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.error).toBe('Access to this site denied');
+  });
+
+  // ==========================================================================
+  // cancelState on the execution READ endpoints (#5040)
+  //
+  // The web UI qualifies a terminal status with the cancel outcome
+  // (resolveExecutionStatusLabel(status, cancelState)); if these two SELECTs
+  // omit the column, that copy is unreachable against real data. The db mock
+  // returns whatever it is handed, so asserting on the response body alone
+  // would be vacuous — these assert the PROJECTION the route passes to
+  // db.select(), which is the thing that was missing.
+  // ==========================================================================
+  describe('cancelState is returned by the execution read endpoints (#5040)', () => {
+    it('GET /scripts/:id/executions selects cancelState', async () => {
+      vi.mocked(db.select)
+        // getScriptWithOrgCheck
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Script One', isSystem: false, orgId: ORG_ID }])
+            })
+          })
+        } as any)
+        // count
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 1 }])
+            })
+          })
+        } as any)
+        // the execution page itself
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([{
+                      id: EXECUTION_ID,
+                      scriptId: SCRIPT_ID_1,
+                      deviceId: 'device-1',
+                      status: 'completed',
+                      cancelState: 'unconfirmed'
+                    }])
+                  })
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}/executions`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      const projection = vi.mocked(db.select).mock.calls[2]?.[0] as Record<string, unknown>;
+      expect(projection).toHaveProperty('cancelState', 'se.cancelState');
+      const body = await res.json();
+      expect(body.data[0].cancelState).toBe('unconfirmed');
+    });
+
+    it('GET /scripts/executions/:id selects cancelState', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{
+                  id: EXECUTION_ID,
+                  scriptId: SCRIPT_ID_1,
+                  deviceId: 'device-1',
+                  status: 'cancelled',
+                  cancelState: 'confirmed',
+                  deviceOrgId: ORG_ID,
+                  deviceSiteId: 'site-allowed'
+                }])
+              })
+            })
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/scripts/executions/${EXECUTION_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(projection).toHaveProperty('cancelState', 'se.cancelState');
+      const body = await res.json();
+      expect(body.cancelState).toBe('confirmed');
+    });
   });
 
   // ==========================================================================
@@ -3187,6 +3333,10 @@ describe('scripts routes', () => {
   // a parameter rename or a source rebinding was invisible to anything
   // pinning the version.
   describe('parameter definitions + version bump', () => {
+    beforeEach(() => {
+      scriptVersionsH.cuts = [];
+    });
+
     function mockCreateInsert(): void {
       vi.mocked(db.insert).mockReturnValue({
         values: vi.fn().mockReturnValue({
@@ -3271,19 +3421,22 @@ describe('scripts routes', () => {
     it('bumps version when a parameter definition changes', async () => {
       const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
       expect((await put({ parameters: [{ name: 'a', type: 'number' }] })).status).toBe(200);
-      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('version'); // cutScriptVersion owns the bump
+      expect(scriptVersionsH.cuts).toHaveLength(1);
     });
 
     it('bumps version when a parameter is rebound to a tenant variable', async () => {
       const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
       await put({ parameters: [{ name: 'a', type: 'string', source: 'tenantVariable', variableKey: 'api_key' }] });
-      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('version'); // cutScriptVersion owns the bump
+      expect(scriptVersionsH.cuts).toHaveLength(1);
     });
 
     it('bumps version when a parameter is added', async () => {
       const { set } = mockUpdate({ parameters: [] });
       await put({ parameters: [{ name: 'a', type: 'string' }] });
-      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('version'); // cutScriptVersion owns the bump
+      expect(scriptVersionsH.cuts).toHaveLength(1);
     });
 
     it('does NOT bump version when the definitions are unchanged', async () => {
@@ -3304,19 +3457,59 @@ describe('scripts routes', () => {
     it('bumps version exactly once when content and parameters both change', async () => {
       const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
       await put({ content: 'echo bye', parameters: [{ name: 'b', type: 'string' }] });
-      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('version'); // cutScriptVersion owns the bump
+      expect(scriptVersionsH.cuts).toHaveLength(1);
     });
 
     it('still bumps version for a content-only change', async () => {
       const { set } = mockUpdate({});
       await put({ content: 'echo bye' });
-      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('version'); // cutScriptVersion owns the bump
+      expect(scriptVersionsH.cuts).toHaveLength(1);
     });
 
     it('rejects a colliding definition on update', async () => {
       mockUpdate({});
       const res = await put({ parameters: [{ name: 'logLevel', type: 'string' }, { name: 'LOGLEVEL', type: 'string' }] });
       expect(res.status).toBe(400);
+    });
+
+    // W01a: language / timeoutSeconds / runAs are part of what a run consumes,
+    // so they move the version too. Before this wave they changed under a
+    // pinned version and a pinned effect digest.
+    it.each([
+      ['language', { language: 'powershell' }, { language: 'bash' }],
+      ['timeoutSeconds', { timeoutSeconds: 300 }, { timeoutSeconds: 900 }],
+      ['runAs', { runAs: 'system' }, { runAs: 'user' }],
+    ])('cuts exactly one human-origin version when %s changes', async (_field, stored, body) => {
+      const { set } = mockUpdate(stored);
+      expect((await put(body)).status).toBe(200);
+      expect(scriptVersionsH.cuts).toHaveLength(1);
+      expect(scriptVersionsH.cuts[0]!.provenance).toMatchObject({ origin: 'human' });
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('version');
+    });
+
+    it.each([
+      ['language', { language: 'bash' }, { language: 'bash' }],
+      ['timeoutSeconds', { timeoutSeconds: 900 }, { timeoutSeconds: 900 }],
+      ['runAs', { runAs: 'user' }, { runAs: 'user' }],
+    ])('cuts nothing when %s is resubmitted unchanged', async (_field, stored, body) => {
+      mockUpdate(stored);
+      expect((await put(body)).status).toBe(200);
+      expect(scriptVersionsH.cuts).toEqual([]);
+    });
+
+    it('does not cut a version for a metadata-only edit', async () => {
+      mockUpdate({});
+      expect((await put({ description: 'new description' })).status).toBe(200);
+      expect(scriptVersionsH.cuts).toEqual([]);
+    });
+
+    it('returns the post-cut version number in the response body', async () => {
+      mockUpdate({});
+      const res = await put({ content: 'echo bye' });
+      const body = (await res.json()) as { version: number };
+      expect(body.version).toBe(scriptVersionsH.nextVersion);
     });
   });
 

@@ -264,6 +264,30 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       // blocks above: `AiAgentLimits` requires it, and nothing on the
       // policy-decision path reads the promotion threshold.
       promoteThreshold: AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
+      // v10 (Fleet Designer W01) design-profile caps — same reason as the
+      // v6/v7/v8/v9 blocks above: `AiAgentLimits` requires them, and nothing
+      // on the policy-decision path reads a design limit.
+      maxConcurrentDesignRuns: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentDesignRuns,
+      maxDesignRunsPerDay: AI_AGENT_LIMIT_DEFAULTS.maxDesignRunsPerDay,
+      designBudgetCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.designBudgetCentsPerRun,
+      designMaxTurns: AI_AGENT_LIMIT_DEFAULTS.designMaxTurns,
+      // v11 (AI patch agent W01) patch-profile caps — same reason again.
+      maxConcurrentPatchRuns: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentPatchRuns,
+      maxPatchRunsPerDay: AI_AGENT_LIMIT_DEFAULTS.maxPatchRunsPerDay,
+      patchBudgetCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.patchBudgetCentsPerRun,
+      patchMaxTurns: AI_AGENT_LIMIT_DEFAULTS.patchMaxTurns,
+      analysisMaxInputDevicesPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxInputDevicesPerRun,
+      analysisMaxTurnsPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxTurnsPerRun,
+      analysisWallClockSeconds: AI_AGENT_LIMIT_DEFAULTS.analysisWallClockSeconds,
+      analysisMaxComputeSeconds: AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeSeconds,
+      analysisMaxComputeCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeCentsPerRun,
+      analysisMaxStagedBytesPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxStagedBytesPerRun,
+      analysisMaxArtifactBytesPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxArtifactBytesPerRun,
+      analysisMaxBudgetCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxBudgetCentsPerRun,
+      analysisMaxRunsPerHour: AI_AGENT_LIMIT_DEFAULTS.analysisMaxRunsPerHour,
+      analysisMaxConcurrentRuns: AI_AGENT_LIMIT_DEFAULTS.analysisMaxConcurrentRuns,
+      analysisMaxStepTimeoutSeconds: AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepTimeoutSeconds,
+      analysisMaxStepsPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepsPerRun,
     },
     triggers: { alertSeverities: [], respectMaintenanceWindows: false },
     recipients: { userIds: ['recipient-1'], roleIds: [] },

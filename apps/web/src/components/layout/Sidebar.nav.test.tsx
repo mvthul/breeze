@@ -31,6 +31,7 @@ vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: 'partner' 
 vi.mock('./BrandHeader', () => ({ default: () => null }));
 
 import Sidebar, { navSections, topLevelNav } from './Sidebar';
+import { GO_TO_SHORTCUTS } from '../../lib/keyboard/goToShortcuts';
 import { i18n, loadLocale } from '../../lib/i18n';
 import en from '../../locales/en/common.json';
 import ptBR from '../../locales/pt-BR/common.json';
@@ -95,6 +96,8 @@ describe('navSections structure (#1321, #1324)', () => {
       '/billing/quotes',
       '/billing/invoices',
       '/contracts',
+      // W03 — the agreement library left /contracts for its own area.
+      '/agreements/templates',
       '/settings/catalog',
     ]);
     expect(hrefsOf('service-desk')).toEqual(['/tickets', '/timesheet']);
@@ -110,7 +113,7 @@ describe('navSections structure (#1321, #1324)', () => {
 
   it('keeps every AI surface together and every platform-admin surface in Administration', () => {
     expect(hrefsOf('ai')).toEqual([
-      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/ai-agents/impact', '/settings/ai-usage', '/ai-for-office',
+      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/ai-agents/impact', '/ai-agents/fleet-design', '/settings/ai-usage', '/settings/ai-script-authoring', '/ai-for-office',
     ]);
     const admin = section('administration');
     expect(admin.items.length).toBeGreaterThan(0);
@@ -120,6 +123,17 @@ describe('navSections structure (#1321, #1324)', () => {
       for (const item of s.items) expect(item.platformAdminOnly, `${s.id} > ${item.href}`).toBeFalsy();
     }
     expect(topLevelNav.map((i) => i.href)).not.toContain('/onedrive');
+  });
+
+  it('adds a Script authoring entry to the AI section, after AI Usage & Budget (#5612 W05)', () => {
+    const item = section('ai').items.find((i) => i.href === '/settings/ai-script-authoring');
+    expect(item).toBeDefined();
+    expect(item?.labelKey).toBe('nav.scriptAuthoring');
+    expect(item?.requiredPermission).toEqual({ resource: 'ai_agents', action: 'read' });
+    const hrefs = hrefsOf('ai');
+    const usageIdx = hrefs.indexOf('/settings/ai-usage');
+    const scriptIdx = hrefs.indexOf('/settings/ai-script-authoring');
+    expect(scriptIdx).toBe(usageIdx + 1);
   });
 
   it('each moved href appears in exactly one section (no duplicate membership)', () => {
@@ -143,6 +157,39 @@ describe('navSections structure (#1321, #1324)', () => {
       'administration',
     ]);
   });
+
+  it('exposes Jobs at top level right after Scripts (#5288)', () => {
+    const hrefs = topLevelNav.map((i) => i.href);
+    expect(hrefs.indexOf('/jobs')).toBe(hrefs.indexOf('/scripts') + 1);
+    const jobs = topLevelNav.find((i) => i.href === '/jobs')!;
+    expect(jobs.name).toBe('Jobs');
+    expect(jobs.labelKey).toBe('nav.jobs');
+    expect(jobs.requiredPermission).toEqual({ resource: 'automations', action: 'read' });
+  });
+
+  it('labels /monitoring as Network Monitor again — monitor config moved under Alerts (2026-09-13)', () => {
+    const item = navSections
+      .find((s) => s.id === 'fleet-management')!
+      .items.find((i) => i.href === '/monitoring')!;
+    expect(item.name).toBe('Network Monitor');
+    expect(item.labelKey).toBe('nav.networkMonitor');
+  });
+});
+
+describe('go-to keyboard chords (g then key)', () => {
+  it('every chord targets a top-level nav item and reuses its label key', () => {
+    for (const shortcut of GO_TO_SHORTCUTS) {
+      const item = topLevelNav.find((nav) => nav.href === shortcut.href);
+      expect(item, `no top-level nav item for g ${shortcut.key} → ${shortcut.href}`).toBeDefined();
+      expect(shortcut.labelKey).toBe(item!.labelKey);
+    }
+  });
+
+  it('uses each key at most once', () => {
+    const keys = GO_TO_SHORTCUTS.map((s) => s.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys.every((k) => /^[a-z]$/.test(k))).toBe(true);
+  });
 });
 
 describe('sidebar i18n seed', () => {
@@ -151,7 +198,7 @@ describe('sidebar i18n seed', () => {
     render(<Sidebar currentPath="/" />);
 
     expect(await screen.findByText('Painel')).toBeInTheDocument();
-    expect(screen.getByText('Dispositivos')).toBeInTheDocument();
+    expect(screen.getByText('Dispositivos e ativos')).toBeInTheDocument();
     expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
   });
 
@@ -282,5 +329,18 @@ describe('sidebar i18n seed', () => {
 
     await i18n.changeLanguage('pt-BR');
     await waitFor(() => expect(screen.getByText('Painel')).toBeInTheDocument());
+  });
+  // The Agreements nav item points at /agreements/templates, and /agreements/signed
+  // is a SIBLING route, not a child — prefix matching alone leaves the item dark
+  // there. pathAliases is what fixes it, and it is otherwise untested.
+  it('keeps the Agreements item active on the sibling /agreements/signed route', async () => {
+    const activeHrefIn = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll('a.bg-primary')).map((a) => a.getAttribute('href'));
+
+    for (const path of ['/agreements/templates', '/agreements/templates/abc-123', '/agreements/signed']) {
+      const { container, unmount } = render(<Sidebar currentPath={path} />);
+      await waitFor(() => expect(activeHrefIn(container)).toContain('/agreements/templates'));
+      unmount();
+    }
   });
 });

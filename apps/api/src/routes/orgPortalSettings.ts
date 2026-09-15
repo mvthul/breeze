@@ -30,6 +30,9 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enableBackups: false,
   enableReports: false,
   enableSupportUsage: false,
+  enableService: false,
+  enableDocuments: false,
+  enableLifecycle: false,
   supportEmail: null,
   supportPhone: null,
   welcomeMessage: null,
@@ -46,6 +49,9 @@ type PortalSettingsRow = {
   enableBackups: boolean;
   enableReports: boolean;
   enableSupportUsage: boolean;
+  enableService: boolean;
+  enableDocuments: boolean;
+  enableLifecycle: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -69,6 +75,9 @@ const portalSettingsColumns = () => ({
   enableBackups: portalBranding.enableBackups,
   enableReports: portalBranding.enableReports,
   enableSupportUsage: portalBranding.enableSupportUsage,
+  enableService: portalBranding.enableService,
+  enableDocuments: portalBranding.enableDocuments,
+  enableLifecycle: portalBranding.enableLifecycle,
   supportEmail: portalBranding.supportEmail,
   supportPhone: portalBranding.supportPhone,
   welcomeMessage: portalBranding.welcomeMessage,
@@ -88,6 +97,9 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enableBackups: row.enableBackups,
     enableReports: row.enableReports,
     enableSupportUsage: row.enableSupportUsage,
+    enableService: row.enableService,
+    enableDocuments: row.enableDocuments,
+    enableLifecycle: row.enableLifecycle,
     supportEmail: row.supportEmail,
     supportPhone: row.supportPhone,
     welcomeMessage: row.welcomeMessage,
@@ -188,7 +200,10 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
             enableSecurity: row.enableSecurity,
             enableBackups: row.enableBackups,
             enableReports: row.enableReports,
-            enableSupportUsage: row.enableSupportUsage
+            enableSupportUsage: row.enableSupportUsage,
+            enableService: row.enableService,
+            enableDocuments: row.enableDocuments,
+            enableLifecycle: row.enableLifecycle
           }
         });
       }

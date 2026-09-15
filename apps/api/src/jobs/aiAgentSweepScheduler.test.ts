@@ -731,6 +731,105 @@ describe('processSweepOccurrence', () => {
     expect(serialized).not.toContain(ORG_B);
   });
 
+  // -------------------------------------------------------------------------
+  // design — one Fleet Design run per org
+  // -------------------------------------------------------------------------
+
+  /** A design baseline sweeps NOTHING either — same
+   *  `ai_agent_schedules_kind_kinds_chk` shape as narrative. */
+  const designBaselineFields = { kind: 'design', sweepKinds: [] as string[], cron: '0 7 1 */3 *' };
+
+  it('fans out one design run per org, device-less, on the design profile', async () => {
+    seedFanout({ baseline: designBaselineFields });
+
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(2);
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledWith({
+      orgId: ORG_A,
+      kind: 'designer',
+      triggerKind: 'schedule',
+      deviceId: null,
+      profile: 'design',
+      scheduleId: SCHEDULE_ID,
+      triggerRef: { scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY, kind: 'design' },
+      dedupeKey: `design-${SCHEDULE_ID}-${ORG_A}-${OCCURRENCE_KEY}`,
+    });
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: ORG_B,
+        kind: 'designer',
+        profile: 'design',
+        dedupeKey: `design-${SCHEDULE_ID}-${ORG_B}-${OCCURRENCE_KEY}`,
+      }),
+    );
+    // Namespaced by profile, same reasoning as the narrative test above: a
+    // shared prefix with sweep or narrative would collide on the same
+    // (schedule, org, occurrence) unique index and silently drop a run.
+    for (const [call] of createAndEnqueueAgentRun.mock.calls) {
+      expect((call as { dedupeKey: string }).dedupeKey.startsWith('sweep-')).toBe(false);
+      expect((call as { dedupeKey: string }).dedupeKey.startsWith('narrative-')).toBe(false);
+      expect((call as { triggerRef: Record<string, unknown> }).triggerRef).not.toHaveProperty('sweepKinds');
+    }
+    expect(summary).toMatchObject({
+      occurrenceKey: OCCURRENCE_KEY,
+      orgsTotal: 2,
+      runsAdmitted: 2,
+      runsSkipped: 0,
+      skipReasons: {},
+    });
+    expect(summary.orgsTotal).toBe(summary.runsAdmitted + summary.runsSkipped);
+  });
+
+  it('skips the empty-kinds guard for a design schedule too', async () => {
+    seedFanout({ baseline: designBaselineFields });
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(2);
+    expect(summary).toMatchObject({ runsAdmitted: 2, runsSkipped: 0, skipReasons: {} });
+  });
+
+  // -------------------------------------------------------------------------
+  // patch — one patch plan run per org (AI patch agent W01)
+  // -------------------------------------------------------------------------
+  const patchBaselineFields = { kind: 'patch', sweepKinds: [] as string[], cron: '0 2 * * *' };
+
+  it('fans out one device-less patch-profile run per org on a patch agent, namespaced dedupe key', async () => {
+    seedFanout({ baseline: patchBaselineFields });
+
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(2);
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledWith({
+      orgId: ORG_A,
+      kind: 'patch',
+      triggerKind: 'schedule',
+      deviceId: null,
+      profile: 'patch',
+      scheduleId: SCHEDULE_ID,
+      triggerRef: { scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY, kind: 'patch' },
+      dedupeKey: `patch-${SCHEDULE_ID}-${ORG_A}-${OCCURRENCE_KEY}`,
+    });
+    for (const [call] of createAndEnqueueAgentRun.mock.calls) {
+      expect((call as { dedupeKey: string }).dedupeKey.startsWith('patch-')).toBe(true);
+      expect((call as { triggerRef: Record<string, unknown> }).triggerRef).not.toHaveProperty('sweepKinds');
+    }
+    expect(summary).toMatchObject({ orgsTotal: 2, runsAdmitted: 2, runsSkipped: 0, skipReasons: {} });
+  });
+
+  it('does not apply the empty-sweepKinds skip to a patch baseline', async () => {
+    seedFanout({ baseline: patchBaselineFields });
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+    expect(summary.skipReasons).not.toHaveProperty('override_disabled');
+    expect(summary).toMatchObject({ runsAdmitted: 2, runsSkipped: 0 });
+  });
+
+  it('counts a declined patch admission under its own skip reason', async () => {
+    seedFanout({ baseline: patchBaselineFields });
+    createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'patch_rate' } as never);
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+    expect(summary).toMatchObject({ runsAdmitted: 0, runsSkipped: 2, skipReasons: { patch_rate: 2 } });
+  });
+
   it('orders the org enumeration deterministically, so the capped slice is stable', async () => {
     const captured = { orderBy: null as unknown };
     const baseline = baselineRow();

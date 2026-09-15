@@ -16,11 +16,14 @@ import {
   type AiAgentGraduationDto,
   type AiAgentRunListItemDto,
   type AiAgentRunStatus,
+  type AiAgentsSystemStatusDto,
   type ExposureBudgetDto,
   createAiAgentSchema,
+  impactMeasuredQuerySchema,
   impactQuerySchema,
   impactRebuildQuerySchema,
   impactWeightsSchema,
+  nextCronOccurrenceAt,
   previewAiAgentSchema,
   promoteSupervisedKeyRequestSchema,
   triggerAgentRunSchema,
@@ -43,8 +46,12 @@ import {
 } from '../services/partnerWideAccess';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from '../services/aiAgents/access';
 import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
+import { readAiKillState } from '../services/aiKillState';
+import { readAgentRunSkipSummary } from '../services/aiAgents/skipVisibility';
+import { AI_AGENTS_ENV_FLAG_NAME, aiAgentsEnvFlagEnabled } from '../services/aiAgents/subsystemState';
 import { enqueueImpactRollupForOrgs } from '../jobs/aiAgentImpactRollup';
 import { loadImpactSummary } from '../services/aiAgents/impactQuery';
+import { loadMeasuredImpact } from '../services/aiAgents/impactMeasured';
 import { lastCompleteUtcDay, shiftUtcDay } from '../services/aiAgents/impactRollup';
 import {
   ImpactPartnerNotFoundError,
@@ -55,7 +62,8 @@ import {
 import {
   createAgent, disableAgent, getAgent, listAgents, recordAgentMutation, updateAgent, withAgentRowLocked,
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
-  InvalidSupervisedActionKeysError, SupervisedKeysGrantOnlyError, UnsupportedAgentModeError,
+  InvalidSupervisedActionKeysError, SupervisedKeysGrantOnlyError, ModeNotAllowedForKindError,
+  UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
 import { InvalidScriptIdsError } from '../services/aiAgents/scriptAuthorization';
 import { buildAgentToolCatalog } from '../services/aiAgents/agentToolCatalog';
@@ -79,13 +87,19 @@ import { findingsToReviewSql, summaryExcerpt } from '../services/aiAgents/runFin
 import { buildRunTrace } from '../services/aiAgents/runTrace';
 import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
 import { sweepFindingDeviceIds } from '../services/aiAgents/sweepFindings';
+import { patchPlanDeviceIds } from '../services/aiAgents/patchPlan';
+import { loadEnabledBaselineCadences } from '../services/aiAgents/scheduleService';
 import { narrativeArtifactProjection } from '../services/aiAgents/narrativeReport';
+import { summarizeDeliveries } from '../services/reportRunDelivery';
+import { fleetDesignArtifactProjection } from '../services/aiAgents/fleetDesignReport';
+import { readRunProgress } from '../services/aiAgents/runProgress';
 import {
   buildRunsKeysetPredicate, decodeRunsCursor, encodeRunsCursor, runsCursorFromRow,
 } from '../services/aiAgents/runsListCursor';
 import { verifyDeviceAccess } from '../services/aiTools';
+import { listArtifactsForAuth, toArtifactDto } from '../services/artifacts/artifactService';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { resolveOrgId } from './networkShared';
 
@@ -210,6 +224,13 @@ export function mapError(c: Context, err: unknown) {
     // err.code, not a repeated literal — the class types it as a literal, so
     // this cannot drift from the value the client branches on.
     return c.json({ error: err.message, code: err.code, supportedModes: SUPPORTED_AGENT_MODES }, 422);
+  }
+  // Fleet Designer (W01): the mode IS generally supported (`shadow` passes
+  // isSupportedAgentMode), it just is not available for THIS agent's kind
+  // (`allowedModesForKind`) — a 400 `mode_not_allowed_for_kind`, distinct
+  // from the 422 above, matching the create route's zod issue shape.
+  if (err instanceof ModeNotAllowedForKindError) {
+    return c.json({ error: err.code }, 400);
   }
   // Task 6 (#3826): the write is mode-legal ('act' is now a supported mode)
   // but would leave the row unable to actually act — no one to notify, or no
@@ -346,10 +367,73 @@ type LastRunProjection = {
   lastRunFindingsToReview: number;
 };
 
+/**
+ * AI patch agent W01 (#5747) — each agent's next scheduled occurrence, for the
+ * whole page in ONE cadence read (never one per row, same rule as
+ * `loadLastRuns` above).
+ *
+ * The occurrence itself is computed by `nextCronOccurrenceAt` from
+ * `@breeze/shared` — the SAME evaluator the schedules drawer renders its
+ * next-run hint with, so the card and the drawer can never disagree about when
+ * an agent fires. An agent with several enabled baselines reports the SOONEST;
+ * an unparseable or never-firing cron contributes nothing rather than throwing,
+ * because one bad stored pattern must not blank the whole settings page.
+ */
+async function loadNextOccurrences(
+  auth: AuthContext,
+  agentIds: string[],
+): Promise<Map<string, string>> {
+  const cadences = await loadEnabledBaselineCadences(auth, agentIds);
+  const soonest = new Map<string, string>();
+  for (const cadence of cadences) {
+    const at = nextCronOccurrenceAt(cadence.cron, cadence.timezone);
+    if (!at) continue;
+    const current = soonest.get(cadence.agentId);
+    if (current === undefined || at < current) soonest.set(cadence.agentId, at);
+  }
+  return soonest;
+}
+
 /** Only the piece of the auth context `loadLastRuns` needs. */
 type AuthContextForRuns = Pick<AuthContext, 'allowedSiteIds'> & {
   orgCondition: (column: typeof aiAgentRuns.orgId) => SQL | undefined;
 };
+
+/**
+ * #5380 — what the settings page needs to stop calling a kill-switched agent
+ * "Running".
+ *
+ * `enabled` is the AND of BOTH kill switches, because that is what admission
+ * actually requires: the env flag is checked first in
+ * `runService.createAndEnqueueAgentRun` and the DB row gates every tool
+ * dispatch in `checkAgentGuardrails`. They are reported separately as well,
+ * since the remedy differs — one is an operator env var (named here so a
+ * self-hoster is not left guessing), the other an admin kill-switch flip.
+ *
+ * `skips` is deliberately nullable: `null` means "unknown" (no Redis, no orgs
+ * in scope), never "nothing was dropped".
+ */
+async function loadAiAgentsSystemStatus(
+  auth: Pick<AuthContext, 'orgId' | 'accessibleOrgIds'>,
+): Promise<AiAgentsSystemStatusDto> {
+  const envFlagEnabled = aiAgentsEnvFlagEnabled();
+  // An org-scoped caller sees exactly its own org; a partner-scoped one its
+  // accessible set. A system-scoped caller (accessibleOrgIds === null) has no
+  // bounded set to aggregate, so the summary stays unknown rather than
+  // fanning out across every tenant on the platform.
+  const orgIds = auth.orgId ? [auth.orgId] : (auth.accessibleOrgIds ?? []);
+  const [killState, skips] = await Promise.all([
+    readAiKillState(),
+    readAgentRunSkipSummary(orgIds),
+  ]);
+  return {
+    enabled: envFlagEnabled && !killState.killed,
+    envFlagEnabled,
+    envFlagName: AI_AGENTS_ENV_FLAG_NAME,
+    killSwitchEngaged: killState.killed,
+    skips,
+  };
+}
 
 aiAgentsRoutes.get(
   '/',
@@ -366,7 +450,11 @@ aiAgentsRoutes.get(
     });
     // Batched, never per row: the settings page renders every agent this
     // caller owns, and a per-row query would be one round trip per agent.
-    const lastRuns = await loadLastRuns(auth, rows.map((row) => row.id));
+    const agentIds = rows.map((row) => row.id);
+    const lastRuns = await loadLastRuns(auth, agentIds);
+    // AI patch agent W01 (#5747): the card's "next occurrence", batched the
+    // same way — one cadence read for the page.
+    const nextOccurrences = await loadNextOccurrences(auth, agentIds);
     // #4170: one query for the whole page, same convention as loadLastRuns
     // above — never one per row. Reported both per-row (`hasPartnerBaseline`,
     // so the list can flag an org row the resolver would treat as inert) and
@@ -374,6 +462,11 @@ aiAgentsRoutes.get(
     // warn before a kind's org row exists at all to read the per-row flag
     // off of).
     const partnerBaselineKinds = await loadPartnerBaselineKinds(auth.partnerId);
+    // #5380 — the page's ONLY read, so the subsystem's own state rides along
+    // with it rather than costing a second request. Without this the badge
+    // below reported `agent.enabled` as "Running" on a server where the
+    // platform kill switch made every trigger a no-op.
+    const system = await loadAiAgentsSystemStatus(auth);
     return c.json({
       data: rows.map((row) => {
         const last = lastRuns.get(row.id);
@@ -385,9 +478,11 @@ aiAgentsRoutes.get(
           lastRunAt: last?.lastRunAt ?? null,
           lastRunStatus: last?.lastRunStatus ?? null,
           lastRunFindingsToReview: last?.lastRunFindingsToReview ?? null,
+          nextOccurrenceAt: nextOccurrences.get(row.id) ?? null,
         };
       }),
       partnerBaselineKinds: Array.from(partnerBaselineKinds),
+      system,
     });
   },
 );
@@ -1203,6 +1298,27 @@ aiAgentsRoutes.get(
 );
 
 /**
+ * The run's artifacts (execution-plane spec §5.2/§8, W01). Registered HERE, in
+ * the router that already owns `/runs/:runId`, rather than in its own app
+ * mounted at the same `/ai/agents` prefix: two routers behind one prefix put
+ * their precedence in index.ts's mount order, invisible from either file, which
+ * is the shape of #4189. Keep this ABOVE `/runs/:runId`.
+ *
+ * An empty list rather than a 404 for another org's run: the run-detail route
+ * below already owns the exists/not-exists answer, and duplicating it here
+ * would add a second, independently-driftable disclosure surface. `blobKey`
+ * never leaves the API — `toArtifactDto` projects fields explicitly.
+ */
+aiAgentsRoutes.get('/runs/:runId/artifacts', scopes, requireAiRead, async (c) => {
+  const runId = uuidParam(c, 'runId');
+  if (!runId) return c.json({ error: 'Invalid run id', code: 'INVALID_RUN_ID' }, 400);
+
+  const auth = c.get('auth');
+  const records = await listArtifactsForAuth(runId, auth);
+  return c.json({ data: records.map(toArtifactDto) });
+});
+
+/**
  * The stitched execution-trace detail (Wave 6 PR 1, #3828): the run row's
  * display-safe fields plus the SAFE outcome projection, execution ledger,
  * and linked-intent summary — see `buildRunTrace` (services/aiAgents/runTrace.ts)
@@ -1242,6 +1358,13 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       // the only representation that goes back to null when the artifact is
       // deleted.
       reportRunId: aiAgentRuns.reportRunId,
+      // Execution plane W04 (#5715) — the settled sandbox charge the
+      // run-detail DTO surfaces beside the analysis outcome.
+      computeCents: aiAgentRuns.computeCents,
+      // Fleet Designer W01 (#5651), Task 9 — gates the fleet design artifact
+      // read below; `undefined`/absent for a row read back through an older
+      // mock/fixture simply never matches `'design'`.
+      profile: aiAgentRuns.profile,
       outcome: aiAgentRuns.outcome,
       intentIds: aiAgentRuns.intentIds,
       turnCount: aiAgentRuns.turnCount,
@@ -1270,6 +1393,11 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     ))
     .limit(1);
   if (!run) return c.json({ error: 'Run not found' }, 404);
+
+  // Live progress (spec §5.8). Read from the short-lived ring, never the DB:
+  // this page polls every 5s and a per-poll table read for telemetry would be
+  // a query per viewer per five seconds for a value that is worth a spinner.
+  const progress = await readRunProgress(run.id);
 
   // The execution ledger is keyed by session, not run — `run.session_id` is
   // set once, inside `driveSdkLoop`, right after the model resolves
@@ -1325,7 +1453,12 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   // run.orgId)` pins the read to the run's OWN org, and the auth condition
   // stays as defence-in-depth beside RLS (matching the two reads above). A
   // device that fails either simply projects a null hostname.
-  const sweepDeviceIds = sweepFindingDeviceIds(run.outcome);
+  // AI patch agent W01 (#5747): a patch plan's item devices ride the SAME
+  // batched, run-org-pinned read — model-authored ids, same threat model.
+  const sweepDeviceIds = [...new Set([
+    ...sweepFindingDeviceIds(run.outcome),
+    ...patchPlanDeviceIds(run.outcome),
+  ])];
   const hostnameRows = sweepDeviceIds.length > 0
     ? await db
       .select({ id: devices.id, hostname: devices.hostname })
@@ -1368,6 +1501,65 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       periodStart: narrativeArtifactRow.periodStart ?? null,
       periodEnd: narrativeArtifactRow.periodEnd ?? null,
       contextTruncated: narrativeArtifactRow.contextTruncated === true,
+    }
+    : null;
+
+  // #4248 W03 (Task 10, OD-7 B) — the narrative's EMAIL delivery counts.
+  // Gated on the artifact read above having found the run's artifact under
+  // the caller's own org pin + RLS: `report_run_deliveries` carries no
+  // org_id (its tenancy is the grandparent `reports` row), so that read is
+  // the tenancy check for this one. Read under the request's own context —
+  // the parent-FK-join policy admits it.
+  //
+  // COUNTS ONLY, and each bucket keeps its own meaning: `refused` is
+  // terminal (authority, no address, or a provider refusal — three causes, so
+  // the copy must not name one), `pending` is not-yet-delivered, `unknown` is
+  // ambiguous. `recipientsUnresolved` comes off the outcome and is the reason
+  // this object is returned even when there are ZERO delivery rows: otherwise
+  // a failed recipient lookup renders exactly like an org with no recipients.
+  const recipientsUnresolved = run.outcome?.narrativeRecipientsUnresolved === true;
+  const narrativeDelivery = run.profile === 'narrative' && narrativeArtifact && run.reportRunId
+    ? await summarizeDeliveries(run.reportRunId).then((s) => ({
+      total: s.total,
+      sent: s.sent,
+      refused: s.failed,
+      pending: s.pending,
+      unknown: s.unknown,
+      recipientsUnresolved,
+    }))
+    : null;
+
+  // Fleet Designer W01 (#5651), Task 9 — the linked fleet design artifact's
+  // provenance scalars, projected out of `report_runs.result` BY POSTGRES
+  // for the same reason the narrative read above is: that jsonb carries the
+  // full rendered markdown and every legacy-script/automation section,
+  // which the run-detail DTO deliberately does not ship. Gated on
+  // `run.profile === 'design'` (unlike the narrative read above, which fires
+  // on `reportRunId` alone) because a design run's linked artifact carries
+  // `summary.fleetDesign`, not `summary.narrative` — querying the wrong
+  // projection would just read back nulls, so the profile gate is what
+  // keeps this from being a wasted round trip on every other profile.
+  //
+  // Same tenancy shape as the narrative read: the join to `reports` carries
+  // the org pin (`report_runs` has no `org_id` of its own), and
+  // `auth.orgCondition` stays as defence-in-depth beside RLS.
+  const [fleetDesignArtifactRow] = run.profile === 'design' && run.reportRunId
+    ? await db
+      .select(fleetDesignArtifactProjection)
+      .from(reportRuns)
+      .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+      .where(and(
+        eq(reportRuns.id, run.reportRunId),
+        eq(reports.orgId, run.orgId),
+        auth.orgCondition(reports.orgId),
+      ))
+      .limit(1)
+    : [];
+  const fleetDesignArtifact = fleetDesignArtifactRow
+    ? {
+      reportId: fleetDesignArtifactRow.reportId ?? null,
+      generatedAt: fleetDesignArtifactRow.generatedAt ?? null,
+      evidenceTruncated: fleetDesignArtifactRow.evidenceTruncated === true,
     }
     : null;
 
@@ -1433,8 +1625,15 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     deviceHostnames,
     narrativeArtifact,
     draftRows,
+    fleetDesignArtifact,
+    narrativeDelivery,
   );
-  return c.json({ data: detail });
+  return c.json({
+    data: {
+      ...detail,
+      progress,
+    },
+  });
 });
 
 /**
@@ -1521,6 +1720,54 @@ aiAgentsRoutes.get(
     }
 
     const data = await loadImpactSummary(auth, query);
+    return c.json({ data });
+  },
+);
+
+/**
+ * AI Scorecard W04 (#5761, refs #4182) —
+ * `GET /ai/agents/impact/measured?window=7|30|90[&orgId]`.
+ *
+ * A SEPARATE endpoint rather than a widening of `/impact`: the measured queries
+ * are heavier and have different authorization outcomes *per signal*, so folding
+ * them in would make the estimate band's latency hostage to the measured band's
+ * and force the estimate DTO to grow an `omitted` vocabulary it does not need.
+ *
+ * Same `scopes` + `requireAiRead` gate as `/impact` — the measured band's EXTRA
+ * requirements (unrestricted site scope; the time-entry permission for the
+ * technician-minutes arm) are enforced inside `loadMeasuredImpact` as
+ * **omissions, not 403s**: a partner admin should see two of three signals, not
+ * an error page. A system-scope caller must name one org, exactly as above.
+ *
+ * `impactMeasuredQuerySchema` is `.strict()`, so a client-supplied `through` is
+ * a 400 rather than a silently-ignored key — `through` is always the last
+ * complete UTC day, computed server-side.
+ */
+aiAgentsRoutes.get(
+  '/impact/measured',
+  scopes,
+  requireAiRead,
+  zValidator('query', impactMeasuredQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+
+    if (query.orgId !== undefined) {
+      if (!auth.canAccessOrg(query.orgId)) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
+    } else if (auth.scope === 'system') {
+      return c.json({
+        error: 'org_id_required',
+        message: 'A system-scoped impact query must name one organization — one weight set belongs to one partner.',
+      }, 400);
+    }
+
+    // Fails CLOSED when the middleware did not resolve a permission set: the
+    // technician-minutes arm omits itself rather than being published to a
+    // caller whose authority we could not establish.
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const data = await loadMeasuredImpact(auth, permissions, query);
     return c.json({ data });
   },
 );
@@ -1750,6 +1997,18 @@ aiAgentsRoutes.post(
         result,
       });
     };
+
+    // Fleet Designer (W01): this route is the DEVICE lane. A designer run is
+    // device-less and belongs on POST /ai/fleet-design/runs; admitted here it
+    // would carry a deviceId and — because this call omits `profile`, which
+    // defaults to 'full' — would run without the design profile's read-only
+    // tool floor and zero action budget. Admission refuses the pairing too
+    // (ownership_mismatch); this is the honest 400 that says why, and it is
+    // checked before the run is attempted so nothing is queued.
+    if (agent.kind === 'designer') {
+      auditTrigger('failure', { deviceId, reason: 'kind_not_device_triggerable' });
+      return c.json({ error: 'kind_not_device_triggerable' }, 400);
+    }
 
     // The loaded row is an authorization/visibility handle and supplies the
     // requested kind. Admission deliberately re-resolves the effective agent,

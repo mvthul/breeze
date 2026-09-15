@@ -270,12 +270,21 @@ describe('action_intents schema', () => {
     const cols = Object.keys(getTableColumns(actionIntents)).sort();
     expect(cols).toEqual(
       [
+        'triggerKind',
+        'triggerRefId',
+        'triggerKey',
         'id',
         'orgId',
         'partnerId',
         'requestedByUserId',
         'originPrincipalKind',
         'originPrincipalId',
+        // #5022 W01 — the AI surface the intent was created from, so the
+        // origin survives the release worker's from-scratch AuthContext
+        // rebuild. Distinct from originPrincipal*, which is the REQUESTER.
+        'aiOriginKind',
+        'aiOriginSessionId',
+        'aiOriginAgentRunId',
         'requestingApiKeyId',
         'requestingAgentRunId',
         'scopeKind',
@@ -307,6 +316,8 @@ describe('action_intents schema', () => {
         'decidedByUserId',
         'decidedAssuranceLevel',
         'decidedVia',
+        // AI script authoring W04 (#5612)
+        'scriptReviewerEvidence',
         'executionStartedAt',
         'executedAt',
         'result',

@@ -59,6 +59,11 @@ import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import {
+  commitDesktopTerminalIntent,
+  confirmDesktopTerminalIntent,
+  parseDesktopStopCommandId,
+} from '../services/remoteDesktopTerminalIntent';
+import {
   logSessionAudit,
   classifyConsentDenyAction,
   resolveConsentMarkerSessionId,
@@ -1234,6 +1239,18 @@ export async function processOrphanedCommandResult(
     console.log(`[AgentWs] Processing monitor check result for monitor ${monitorData.monitorId} from agent ${agentId}`);
     try {
       const monitorId = monitorData.monitorId;
+      // #5291 W04 - the probing device and ITS org tenant-scope the result row.
+      // For a partner-wide network check the definition owns no org at all, so
+      // this is the ONLY thing that can say which tenant the result belongs to.
+      // A miss is a deny: we pass null rather than guess a tenant.
+      const [probeDevice] = await withSystemDbAccessContext(() =>
+        db
+          .select({ id: devices.id, orgId: devices.orgId })
+          .from(devices)
+          .where(eq(devices.id, authenticatedDeviceId))
+          .limit(1)
+      );
+      const reporter = { orgId: probeDevice?.orgId ?? null, deviceId: probeDevice?.id ?? null };
       const checkResult = {
         monitorId,
         checkId: result.commandId,
@@ -1252,15 +1269,23 @@ export async function processOrphanedCommandResult(
         // Redis round-trips; the full fix is dispatching enqueues after the
         // context closes (#1105).
         await runOutsideDbContext(() =>
-          enqueueMonitorCheckResult(monitorId, checkResult, {
-            actorType: 'agent',
-            actorId: agentId,
-            source: 'route:agentWs:monitor-result',
-          })
+          enqueueMonitorCheckResult(
+            monitorId,
+            checkResult,
+            {
+              actorType: 'agent',
+              actorId: agentId,
+              source: 'route:agentWs:monitor-result',
+            },
+            // #5291 W04 - the probing device and ITS org. For a partner-wide
+            // network check this is the fanned-out org, which is the only
+            // thing that can tenant-scope the result row.
+            reporter,
+          )
         );
       } else {
         console.warn(`[AgentWs] Redis unavailable, recording monitor result directly for ${monitorId}`);
-        await recordMonitorCheckResult(monitorId, checkResult);
+        await recordMonitorCheckResult(monitorId, checkResult, reporter);
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process monitor check result for ${agentId}:`, err);
@@ -2786,9 +2811,12 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               ) || null;
               try {
                 await runWithAgentDbAccess('agentWs.desktop.peerDisconnected', async () => {
-                  const result = await db
-                    .update(remoteSessions)
-                    .set({
+                  // Through the terminal-intent contract (SEC-038 W03). The
+                  // endpoint is the source of this terminal fact — the agent
+                  // has already stopped — so the phase is 'confirmed' at once.
+                  const result = await commitDesktopTerminalIntent({
+                    sessionId,
+                    write: {
                       status: 'disconnected',
                       endedAt: new Date(),
                       // Only fills errorMessage when it's still empty — never
@@ -2797,16 +2825,14 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                       ...(stopReason
                         ? { errorMessage: sql`COALESCE(${remoteSessions.errorMessage}, ${stopReason})` }
                         : {}),
-                    })
-                    .where(
-                      and(
-                        eq(remoteSessions.id, sessionId),
-                        eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
-                        eq(remoteSessions.status, 'active')
-                      )
-                    )
-                    .returning({ id: remoteSessions.id });
-                  if (result.length > 0) {
+                    },
+                    phase: 'confirmed',
+                    where: [
+                      eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
+                      eq(remoteSessions.status, 'active'),
+                    ],
+                  });
+                  if (result.ok) {
                     // Kill the viewer token too: a peer drop (tab crash, network
                     // blip, agent restart) must not leave a still-valid token that
                     // can resurrect the session via /viewer/offer. Finding #5.
@@ -2816,6 +2842,34 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 });
               } catch (err) {
                 console.error(`[AgentWs] Failed to update session disconnect:`, err);
+              }
+            }
+          }
+
+          // SEC-038 W03: the agent acknowledged a generation-bound stop. Move
+          // the row's teardown phase pending → confirmed — but only when the
+          // result's identity names the exact terminal generation the row is
+          // waiting on and the reporting agent owns the device. A legacy
+          // `desk-stop-<sessionId>` id (no generation), an older generation,
+          // a failed stop or a foreign device all match nothing, and the
+          // terminal intent stands. Never a status write: the row is already
+          // terminal; this is bookkeeping about the endpoint, not the row.
+          if (fastCommandId.startsWith('desk-stop-') && fastStatus === 'completed') {
+            const stop = parseDesktopStopCommandId(fastCommandId);
+            if (stop) {
+              try {
+                await runWithAgentDbAccess('agentWs.desktop.stopConfirmed', async () => {
+                  const outcome = await confirmDesktopTerminalIntent({
+                    sessionId: stop.sessionId,
+                    deviceId: authenticatedAgent.deviceId,
+                    terminalGeneration: stop.terminalGeneration,
+                  });
+                  if (outcome === 'confirmed') {
+                    console.log(`[AgentWs] Session ${stop.sessionId} teardown confirmed at generation ${stop.terminalGeneration}`);
+                  }
+                });
+              } catch (err) {
+                console.error(`[AgentWs] Failed to confirm desktop stop:`, err);
               }
             }
           }
@@ -2839,24 +2893,19 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             if (sessionId) {
               try {
                 await runWithAgentDbAccess('agentWs.desktop.consentDenied', async () => {
-                  const [updated] = await db
-                    .update(remoteSessions)
-                    .set({ status: 'denied', endedAt: new Date() })
-                    .where(
-                      and(
-                        eq(remoteSessions.id, sessionId),
-                        eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
-                        eq(remoteSessions.status, 'connecting'),
-                        eq(remoteSessions.desktopStartCommandId, fastCommandId),
-                      )
-                    )
-                    .returning({
-                      id: remoteSessions.id,
-                      orgId: remoteSessions.orgId,
-                      userId: remoteSessions.userId,
-                      type: remoteSessions.type,
-                      promptMode: remoteSessions.desktopPromptMode,
-                    });
+                  // Through the terminal-intent contract (SEC-038 W03); the
+                  // endpoint refused the start, so the phase is 'confirmed'.
+                  const denied = await commitDesktopTerminalIntent({
+                    sessionId,
+                    write: { status: 'denied', endedAt: new Date() },
+                    phase: 'confirmed',
+                    where: [
+                      eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
+                      eq(remoteSessions.status, 'connecting'),
+                      eq(remoteSessions.desktopStartCommandId, fastCommandId),
+                    ],
+                  });
+                  const updated = denied.ok ? denied.row : undefined;
 
                   if (updated) {
                     // Kill the viewer token so a lingering token can't resurrect
@@ -3005,24 +3054,24 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             if (sessionId) {
               try {
                 await runWithAgentDbAccess('agentWs.desktop.captureFailed', async () => {
-                  const result = await db
-                    .update(remoteSessions)
-                    .set({
+                  // Through the terminal-intent contract (SEC-038 W03); the
+                  // capture never started, so the phase is 'confirmed'.
+                  const result = await commitDesktopTerminalIntent({
+                    sessionId,
+                    write: {
                       status: 'failed',
                       errorMessage: errorMsg,
                       endedAt: new Date()
-                    })
-                    .where(
-                      and(
-                        eq(remoteSessions.id, sessionId),
-                        eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
-                        eq(remoteSessions.status, 'connecting'),
-                        eq(remoteSessions.desktopStartCommandId, fastCommandId),
-                      )
-                    )
-                    .returning({ id: remoteSessions.id });
+                    },
+                    phase: 'confirmed',
+                    where: [
+                      eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
+                      eq(remoteSessions.status, 'connecting'),
+                      eq(remoteSessions.desktopStartCommandId, fastCommandId),
+                    ],
+                  });
 
-                  if (result.length > 0) {
+                  if (result.ok) {
                     await revokeViewerSession(sessionId);
                     console.log(`[AgentWs] Session ${sessionId} marked failed: ${errorMsg}`);
                   } else {

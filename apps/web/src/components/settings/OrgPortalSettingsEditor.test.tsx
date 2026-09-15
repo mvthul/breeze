@@ -29,6 +29,9 @@ const SETTINGS = {
   enableBackups: false,
   enableReports: false,
   enableSupportUsage: false,
+  enableService: false,
+  enableDocuments: false,
+  enableLifecycle: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome!',
@@ -118,6 +121,9 @@ describe('OrgPortalSettingsEditor', () => {
       'enableBackups',
       'enableReports',
       'enableSupportUsage',
+      'enableService',
+      'enableDocuments',
+      'enableLifecycle',
     ]) {
       expect((screen.getByTestId(
         `org-portal-toggle-${key}`,
@@ -153,6 +159,9 @@ describe('OrgPortalSettingsEditor', () => {
       enableBackups: true,
       enableReports: true,
       enableSupportUsage: true,
+      enableService: true,
+      enableDocuments: true,
+      enableLifecycle: true,
     });
   });
 

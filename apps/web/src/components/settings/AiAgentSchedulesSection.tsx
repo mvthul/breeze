@@ -42,14 +42,21 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import {
-  AI_AGENT_SCHEDULE_KINDS,
   AI_SWEEP_KINDS,
+  DESIGN_DEFAULT_CRON,
+  PATCH_DEFAULT_CRON,
+  isDailyOrRarerLiteralCron,
   isHourlyFloorCron,
+  isMonthlyOrRarerLiteralCron,
   isStructurallyValidCron,
+  nextCronOccurrence,
+  parseFiveFieldCron,
+  wallClockNow,
   isWeeklyLiteralCron,
   listIanaTimezones,
   normalizeTimezone,
   type AiAgentEffectiveScheduleDto,
+  type AiAgentKind,
   type AiAgentScheduleKind,
   type AiSweepKind,
 } from '@breeze/shared';
@@ -66,6 +73,18 @@ interface Props {
   /** Schedules only attach to a partner-wide agent — an org-owned one gets the
    *  explanatory note instead of a CRUD surface it cannot use. */
   agentOwnerScope: 'partner' | 'organization';
+  /**
+   * Fleet Designer (W01) — which schedule KINDS this section's create form
+   * may offer, keyed off the target agent's own kind. A `design` schedule
+   * targets a partner-wide DESIGNER agent (`agent_kind_not_designer`), never
+   * the triage agent sweep/narrative schedules attach to — the two sets are
+   * disjoint, so a triage row's chooser must never offer `design` and a
+   * designer row's must never offer `sweep`/`narrative`. Defaults to
+   * `'triage'` (pre-W01 behaviour, and the only other kind this section is
+   * ever mounted for) so every pre-existing call site keeps compiling
+   * without passing it.
+   */
+  agentKind?: AiAgentKind;
   /** True for a partner-scope session (`useDefaultOwnerScope().isPartnerScope`),
    *  the only kind that may write a partner-wide baseline. */
   isPartnerScope: boolean;
@@ -105,6 +124,8 @@ const SCHEDULE_ERROR_COPY: Record<string, ((t: (key: string) => string) => strin
   baseline_agent_mismatch: (t) => t('aiAgentsPage.schedules.errors.baselineAgentMismatch'),
   agent_not_partner_wide: (t) => t('aiAgentsPage.schedules.errors.agentNotPartnerWide'),
   agent_kind_not_triage: (t) => t('aiAgentsPage.schedules.errors.agentKindNotTriage'),
+  agent_kind_not_designer: (t) => t('aiAgentsPage.schedules.errors.agentKindNotDesigner'),
+  agent_kind_not_patch: (t) => t('aiAgentsPage.schedules.errors.agentKindNotPatch'),
   // P2-3's two narrative-only codes. Both are unreachable through this form
   // (it never offers a kind on a narrative draft, and blocks Save on a
   // non-weekly narrative cron), so these are the concurrent-second-tab and
@@ -124,161 +145,22 @@ function isFiveFieldCron(value: string): boolean {
 // A cron field is validated by `isStructurallyValidCron` but never EVALUATED
 // anywhere on the client, so `0 3 * * 7` and `0 3 * * 0` (Sunday, twice) look
 // identical to an operator and a typo'd day-of-week is invisible until the
-// sweep silently fails to fire for a week. `cron-parser` is not a dependency
-// of apps/web (only of apps/api, transitively through BullMQ), so this
-// evaluates the same grammar `isValidCronField` accepts — comma lists of `*`,
-// a value, or `a-b`, each optionally `/step`, with month and day names.
+// sweep silently fails to fire for a week.
 //
-// TIMEZONE. The result is WALL-CLOCK TIME IN THE SCHEDULE'S OWN ZONE, and the
-// label says which zone, so no instant conversion is needed: "now" is read
-// into that zone's wall clock once and the search then walks a plain calendar.
-// The consequence is that a DST transition is not modelled — a preview one
-// hour off twice a year is the accepted cost of not shipping a tz library to
-// render a hint. The scheduler, not this function, decides when a sweep runs.
+// The evaluator itself now lives in `@breeze/shared` (`utils/cron.ts`): the AI
+// patch agent (W01, #5747) made the agents LIST ROUTE report each agent's next
+// occurrence on its card, and a second implementation would let the card and
+// this drawer disagree. Re-exported here because this module is where the
+// component's own tests reach for it.
+//
+// TIMEZONE. `nextCronOccurrence` returns WALL-CLOCK TIME IN THE SCHEDULE'S OWN
+// ZONE and the label says which zone, so no instant conversion happens here.
+// A DST transition is not modelled — a preview one hour off twice a year is
+// the accepted cost of not shipping a tz library to render a hint. The
+// scheduler, not this function, decides when a sweep runs.
 // ---------------------------------------------------------------------------
 
-const CRON_MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-const CRON_DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-
-/** Every value one cron field matches, or null when the field does not parse. */
-function expandCronField(
-  field: string,
-  min: number,
-  max: number,
-  names: readonly string[],
-): Set<number> | null {
-  const readValue = (token: string): number | null => {
-    const named = names.indexOf(token.toLowerCase());
-    // Month names are 1-based, day names 0-based — the same asymmetry
-    // `isValidCronField` encodes.
-    if (named >= 0) return names === CRON_MONTH_NAMES ? named + 1 : named;
-    if (!/^\d+$/.test(token)) return null;
-    const value = Number(token);
-    return value >= min && value <= max ? value : null;
-  };
-
-  const values = new Set<number>();
-  for (const listItem of field.split(',')) {
-    if (listItem === '') return null;
-    const [rangePart, stepPart, ...extra] = listItem.split('/');
-    if (extra.length > 0) return null;
-    if (stepPart !== undefined && !/^[1-9]\d*$/.test(stepPart)) return null;
-    const step = stepPart === undefined ? 1 : Number(stepPart);
-    let from: number;
-    let to: number;
-    if (rangePart === '*') {
-      from = min;
-      to = max;
-    } else {
-      const bounds = (rangePart ?? '').split('-');
-      if (bounds.length > 2) return null;
-      const parsed = bounds.map(readValue);
-      if (parsed.some((value) => value === null)) return null;
-      from = parsed[0] as number;
-      // A bare `5/15` means "from 5 to the end of the range, every 15" —
-      // a lone value with no step is just itself.
-      to = parsed.length === 2 ? (parsed[1] as number) : stepPart === undefined ? from : max;
-      if (from > to) return null;
-    }
-    for (let value = from; value <= to; value += step) values.add(value);
-  }
-  return values.size === 0 ? null : values;
-}
-
-interface CronFields {
-  minutes: Set<number>;
-  hours: Set<number>;
-  daysOfMonth: Set<number>;
-  months: Set<number>;
-  daysOfWeek: Set<number>;
-  domRestricted: boolean;
-  dowRestricted: boolean;
-}
-
-export function parseFiveFieldCron(cron: string): CronFields | null {
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 5) return null;
-  const minutes = expandCronField(parts[0]!, 0, 59, []);
-  const hours = expandCronField(parts[1]!, 0, 23, []);
-  const daysOfMonth = expandCronField(parts[2]!, 1, 31, []);
-  const months = expandCronField(parts[3]!, 1, 12, CRON_MONTH_NAMES);
-  const rawDaysOfWeek = expandCronField(parts[4]!, 0, 7, CRON_DAY_NAMES);
-  if (!minutes || !hours || !daysOfMonth || !months || !rawDaysOfWeek) return null;
-  return {
-    minutes,
-    hours,
-    daysOfMonth,
-    months,
-    // 7 and 0 are both Sunday.
-    daysOfWeek: new Set([...rawDaysOfWeek].map((day) => (day === 7 ? 0 : day))),
-    domRestricted: parts[2] !== '*',
-    dowRestricted: parts[4] !== '*',
-  };
-}
-
-/**
- * First matching wall-clock minute strictly after `fromMs`, expressed as a
- * floating instant (the Y-M-D H:M read as if it were UTC). Null when nothing
- * matches inside a year — `0 0 30 2 *` is structurally valid and never fires.
- */
-export function nextCronOccurrence(fields: CronFields, fromMs: number): Date | null {
-  const cursor = new Date(Math.floor(fromMs / 60000) * 60000 + 60000);
-  for (let day = 0; day < 400; day += 1) {
-    if (fields.months.has(cursor.getUTCMonth() + 1)) {
-      const domHit = fields.daysOfMonth.has(cursor.getUTCDate());
-      const dowHit = fields.daysOfWeek.has(cursor.getUTCDay());
-      // Vixie cron: when BOTH day fields are restricted the day matches if
-      // EITHER does; otherwise the unrestricted one is a no-op `*`.
-      const dayHit = fields.domRestricted && fields.dowRestricted ? domHit || dowHit : domHit && dowHit;
-      if (dayHit) {
-        const fromHour = cursor.getUTCHours();
-        for (let hour = fromHour; hour < 24; hour += 1) {
-          if (!fields.hours.has(hour)) continue;
-          const fromMinute = hour === fromHour ? cursor.getUTCMinutes() : 0;
-          for (let minute = fromMinute; minute < 60; minute += 1) {
-            if (!fields.minutes.has(minute)) continue;
-            return new Date(Date.UTC(
-              cursor.getUTCFullYear(),
-              cursor.getUTCMonth(),
-              cursor.getUTCDate(),
-              hour,
-              minute,
-            ));
-          }
-        }
-      }
-    }
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-    cursor.setUTCHours(0, 0, 0, 0);
-  }
-  return null;
-}
-
-/** "Now" as a floating instant on `timezone`'s wall clock. */
-function wallClockNow(timezone: string, now: Date): number {
-  try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone,
-      hour12: false,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).formatToParts(now);
-    const read = (type: string) => Number(parts.find((part) => part.type === type)?.value);
-    const year = read('year');
-    if (!Number.isFinite(year)) throw new Error('unreadable parts');
-    // `hour12: false` renders midnight as 24 in some ICU versions.
-    return Date.UTC(year, read('month') - 1, read('day'), read('hour') % 24, read('minute'));
-  } catch {
-    // An unknown zone must not blank the whole row — fall back to UTC and
-    // keep the label, which names the zone the schedule actually stores.
-    return Date.UTC(
-      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), now.getUTCMinutes(),
-    );
-  }
-}
+export { nextCronOccurrence, parseFiveFieldCron };
 
 type NextRun =
   | { kind: 'invalid' }
@@ -306,22 +188,62 @@ export function describeNextRun(cron: string, timezone: string, now = new Date()
  * Phase 2 wave P2-3 — the create defaults per schedule kind. A narrative
  * schedule must fire exactly once a week (`isWeeklyLiteralCron`), so its
  * default cron is a weekly literal; a sweep schedule may fire as often as
- * hourly and keeps the pre-P2-3 nightly default.
+ * hourly and keeps the pre-P2-3 nightly default. Fleet Designer (W01) adds
+ * `design`, which must fire at most once a month (`isMonthlyOrRarerLiteralCron`)
+ * — `DESIGN_DEFAULT_CRON` (shared) is the quarterly literal the server ships
+ * as its own default, restated here rather than duplicated.
  */
 const CRON_DEFAULTS: Readonly<Record<AiAgentScheduleKind, string>> = Object.freeze({
   sweep: '0 3 * * *',
   narrative: '0 7 * * 1',
+  design: DESIGN_DEFAULT_CRON,
+  // AI patch agent (W01) — at most once a day (`isDailyOrRarerLiteralCron`);
+  // `PATCH_DEFAULT_CRON` (shared) is the 02:00 nightly literal the server
+  // creates on enable, restated here rather than duplicated.
+  patch: PATCH_DEFAULT_CRON,
 });
 
 /**
+ * Fleet Designer (W01) — which schedule kinds a create form may offer, keyed
+ * off the target agent's kind. See the `agentKind` prop's docstring: a
+ * design schedule targets a designer agent exclusively, disjoint from the
+ * sweep/narrative pair every other schedulable kind (triage, today) offers.
+ */
+const SCHEDULE_KINDS_FOR_AGENT_KIND: Readonly<Record<SchedulableAgentKind, readonly AiAgentScheduleKind[]>> =
+  Object.freeze({
+    triage: ['sweep', 'narrative'],
+    designer: ['design'],
+    // AI patch agent (W01) — disjoint from both sets above, for the same
+    // reason `design` is: the API refuses any other kind on a patch agent.
+    patch: ['patch'],
+  });
+
+/** The agent kinds this section is ever mounted for (`AiAgentForm`'s gate). */
+type SchedulableAgentKind = 'triage' | 'designer' | 'patch';
+
+/**
+ * Which set a given agent kind may choose from. A real lookup keyed by the
+ * agent kind, with `triage` as the default — before AI patch agent W01 this
+ * was a `=== 'designer'` ternary, which would have silently handed a patch
+ * agent the sweep/narrative pair.
+ */
+function scheduleKindsFor(agentKind: string): readonly AiAgentScheduleKind[] {
+  return SCHEDULE_KINDS_FOR_AGENT_KIND[agentKind as SchedulableAgentKind]
+    ?? SCHEDULE_KINDS_FOR_AGENT_KIND.triage;
+}
+
+/**
  * A row's kind, tolerant of a body written by a pre-P2-3 API build (which
- * emits no `kind` at all). Anything that is not the literal `narrative` is
+ * emits no `kind` at all). Anything that is not `narrative` or `design` is
  * the sweep behaviour every schedule had before this wave — never an
  * `undefined` that would render `aiAgentsPage.schedules.kinds.undefined` as
  * a visible key path.
  */
 function kindOf(schedule: Pick<AiAgentEffectiveScheduleDto, 'kind'>): AiAgentScheduleKind {
-  return schedule.kind === 'narrative' ? 'narrative' : 'sweep';
+  if (schedule.kind === 'narrative') return 'narrative';
+  if (schedule.kind === 'design') return 'design';
+  if (schedule.kind === 'patch') return 'patch';
+  return 'sweep';
 }
 
 /** Canonical AI_SWEEP_KINDS order, so a toggled list never depends on click
@@ -405,6 +327,7 @@ const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 export default function AiAgentSchedulesSection({
   agentId,
   agentOwnerScope,
+  agentKind = 'triage',
   isPartnerScope,
   orgId,
   onDirtyChange,
@@ -413,6 +336,9 @@ export default function AiAgentSchedulesSection({
   const schedulable = agentOwnerScope === 'partner';
   const canManageBaselines = schedulable && isPartnerScope;
   const canOverride = schedulable && orgId !== null;
+  // See `SCHEDULE_KINDS_FOR_AGENT_KIND`'s docstring — a real lookup keyed by
+  // the agent kind, defaulting to the sweep/narrative pair.
+  const availableScheduleKinds = scheduleKindsFor(agentKind);
 
   const [schedules, setSchedules] = useState<AiAgentEffectiveScheduleDto[]>([]);
   const [loading, setLoading] = useState(schedulable);
@@ -531,33 +457,36 @@ export default function AiAgentSchedulesSection({
 
   const openCreate = () => {
     setConfirmDelete(false);
+    const kind = availableScheduleKinds[0] ?? 'sweep';
     seedDraft({
       mode: 'baseline',
       id: null,
-      kind: 'sweep',
-      cron: CRON_DEFAULTS.sweep,
+      kind,
+      cron: CRON_DEFAULTS[kind],
       timezone: defaultTimezone(),
       // Every check by default: a sweep is read-only reconnaissance in this
       // wave, and `sweepKinds` is `.min(1)` server-side, so an empty default
-      // would ship a form whose Save is disabled on open.
-      sweepKinds: [...AI_SWEEP_KINDS],
+      // would ship a form whose Save is disabled on open. Neither narrative
+      // nor design evaluates any sweep kind.
+      sweepKinds: kind === 'sweep' ? [...AI_SWEEP_KINDS] : [],
       enabled: true,
     });
   };
 
   /**
    * Switching the create form's kind rewrites the whole cadence/kinds pair,
-   * not just the kind: the two branches have incompatible server rules
-   * (narrative = weekly literal + NO sweep kinds; sweep = hourly floor + at
-   * least one). Carrying either field across would leave the form in a state
-   * whose Save the server refuses — or, worse, silently valid but wrong.
+   * not just the kind: the branches have incompatible server rules
+   * (narrative = weekly literal + NO sweep kinds; design = monthly-or-rarer
+   * literal + NO sweep kinds; sweep = hourly floor + at least one). Carrying
+   * either field across would leave the form in a state whose Save the
+   * server refuses — or, worse, silently valid but wrong.
    */
   const setCreateKind = (drafted: BaselineDraft, kind: AiAgentScheduleKind) => {
     editDraft({
       ...drafted,
       kind,
       cron: CRON_DEFAULTS[kind],
-      sweepKinds: kind === 'narrative' ? [] : [...AI_SWEEP_KINDS],
+      sweepKinds: kind === 'sweep' ? [...AI_SWEEP_KINDS] : [],
     });
   };
 
@@ -590,14 +519,23 @@ export default function AiAgentSchedulesSection({
   };
 
   // A SWEEP baseline must ALSO clear the server's hourly floor
-  // (`isHourlyFloorCron` — see the module doc), and a narrative baseline must
-  // ALSO be a weekly literal (`isWeeklyLiteralCron`) — both the same
-  // predicates the server applies, restated rather than approximated, so a
-  // cron this form accepts is never one the API then refuses.
+  // (`isHourlyFloorCron` — see the module doc), a narrative baseline must
+  // ALSO be a weekly literal (`isWeeklyLiteralCron`), and a Fleet Designer
+  // (W01) design baseline must ALSO be monthly-or-rarer
+  // (`isMonthlyOrRarerLiteralCron`) — all three the same predicates the
+  // server applies, restated rather than approximated, so a cron this form
+  // accepts is never one the API then refuses.
   const cronValid = draft?.mode !== 'baseline'
     ? true
     : isFiveFieldCron(draft.cron)
-      && (draft.kind === 'narrative' ? isWeeklyLiteralCron(draft.cron) : isHourlyFloorCron(draft.cron));
+      && (draft.kind === 'narrative'
+        ? isWeeklyLiteralCron(draft.cron)
+        : draft.kind === 'design'
+          ? isMonthlyOrRarerLiteralCron(draft.cron)
+          // AI patch agent (W01) — daily or rarer, the server's own floor.
+          : draft.kind === 'patch'
+            ? isDailyOrRarerLiteralCron(draft.cron)
+            : isHourlyFloorCron(draft.cron));
   // `.min(1)` on a SWEEP baseline (a sweep baseline that sweeps nothing is
   // pointless); a narrative baseline evaluates no kinds at all, and an
   // override's `[]` is meaningful — "run no check for this org".
@@ -611,29 +549,31 @@ export default function AiAgentSchedulesSection({
     // create it under and the server would reject the body outright.
     if (draft.mode === 'override' && draft.id === null && !orgId) return;
 
-    // A NARRATIVE schedule evaluates no sweep kinds, and the create schema
-    // refuses a non-empty list on that branch (`kinds_not_empty`). Omitting
-    // the key entirely — rather than sending `[]` — is what the schema's
-    // "omitted or empty" wording means, and keeps the wire body honest about
-    // the fact that a narrative schedule has no checks to select.
-    const narrative = draft.kind === 'narrative';
+    // A NARRATIVE or DESIGN schedule evaluates no sweep kinds, and the
+    // create schema refuses a non-empty list on either branch
+    // (`kinds_not_empty`). Omitting the key entirely — rather than sending
+    // `[]` — is what the schema's "omitted or empty" wording means, and
+    // keeps the wire body honest about the fact that neither kind has any
+    // checks to select. Neither branch sends a bare `kind: 'sweep'` either —
+    // that stays the server's own omitted-key default.
+    const noSweepKinds = draft.kind !== 'sweep';
 
     const payload: Record<string, unknown> =
       draft.mode === 'baseline'
         ? draft.id === null
           ? {
               ownerScope: 'partner',
-              ...(narrative ? { kind: 'narrative' } : {}),
+              ...(noSweepKinds ? { kind: draft.kind } : {}),
               agentId,
               cron: draft.cron.trim(),
               timezone: draft.timezone,
-              ...(narrative ? {} : { sweepKinds: draft.sweepKinds }),
+              ...(noSweepKinds ? {} : { sweepKinds: draft.sweepKinds }),
               enabled: draft.enabled,
             }
           : {
               cron: draft.cron.trim(),
               timezone: draft.timezone,
-              ...(narrative ? {} : { sweepKinds: draft.sweepKinds }),
+              ...(noSweepKinds ? {} : { sweepKinds: draft.sweepKinds }),
               enabled: draft.enabled,
             }
         : draft.id === null
@@ -642,15 +582,15 @@ export default function AiAgentSchedulesSection({
               orgId,
               baselineScheduleId: draft.baselineId,
               enabled: draft.enabled,
-              // Required on this branch even for a narrative baseline, where
-              // the only admissible value is the empty list.
-              sweepKinds: narrative ? [] : draft.sweepKinds,
+              // Required on this branch even for a narrative/design baseline,
+              // where the only admissible value is the empty list.
+              sweepKinds: noSweepKinds ? [] : draft.sweepKinds,
             }
           : // `updateAiAgentScheduleSchema` is `.strict()` and admits neither
             // ownerScope nor baselineScheduleId — both are immutable.
             {
               enabled: draft.enabled,
-              ...(narrative ? {} : { sweepKinds: draft.sweepKinds }),
+              ...(noSweepKinds ? {} : { sweepKinds: draft.sweepKinds }),
             };
 
     const path = draft.id === null ? '/ai/agents/schedules' : `/ai/agents/schedules/${draft.id}`;
@@ -714,13 +654,17 @@ export default function AiAgentSchedulesSection({
   const kindLabel = (kind: AiSweepKind) =>
     t(/* i18n-dynamic */ `aiAgentsPage.schedules.kindLabels.${kind}`);
 
-  // Literal keys, not a dynamic `t()` on the token: the closed two-member
-  // union is worth spelling out so the keyUsage guard verifies both labels
+  // Literal keys, not a dynamic `t()` on the token: the closed three-member
+  // union is worth spelling out so the keyUsage guard verifies every label
   // statically (the same reason RunsListPage's statusLabel is a switch).
   const scheduleKindLabel = (kind: AiAgentScheduleKind) =>
     kind === 'narrative'
       ? t('aiAgentsPage.schedules.kinds.narrative')
-      : t('aiAgentsPage.schedules.kinds.sweep');
+      : kind === 'design'
+        ? t('aiAgentsPage.schedules.kinds.design')
+        : kind === 'patch'
+          ? t('aiAgentsPage.schedules.kinds.patch')
+          : t('aiAgentsPage.schedules.kinds.sweep');
 
   const kindsSentence = (kinds: readonly AiSweepKind[]) =>
     kinds.length === 0
@@ -769,7 +713,7 @@ export default function AiAgentSchedulesSection({
             onChange={(e) => setCreateKind(drafted, e.target.value as AiAgentScheduleKind)}
             data-testid="ai-agent-schedule-kind"
           >
-            {AI_AGENT_SCHEDULE_KINDS.map((kind) => (
+            {availableScheduleKinds.map((kind) => (
               <option key={kind} value={kind}>
                 {scheduleKindLabel(kind)}
               </option>
@@ -791,11 +735,23 @@ export default function AiAgentSchedulesSection({
             />
             <span
               className="block text-xs text-muted-foreground"
-              data-testid={drafted.kind === 'narrative' ? 'ai-agent-schedule-weekly-hint' : 'ai-agent-schedule-cron-hint'}
+              data-testid={
+                drafted.kind === 'narrative'
+                  ? 'ai-agent-schedule-weekly-hint'
+                  : drafted.kind === 'design'
+                    ? 'ai-agent-schedule-monthly-hint'
+                    : drafted.kind === 'patch'
+                      ? 'ai-agent-schedule-daily-hint'
+                      : 'ai-agent-schedule-cron-hint'
+              }
             >
               {drafted.kind === 'narrative'
                 ? t('aiAgentsPage.schedules.weeklyOnlyHint')
-                : t('aiAgentsPage.schedules.cronHint')}
+                : drafted.kind === 'design'
+                  ? t('aiAgentsPage.schedules.monthlyOrRarerHint')
+                  : drafted.kind === 'patch'
+                    ? t('aiAgentsPage.schedules.dailyOrRarerHint')
+                    : t('aiAgentsPage.schedules.cronHint')}
             </span>
             {!cronValid && (
               <span className="block text-xs text-destructive" data-testid="ai-agent-schedule-cron-invalid">

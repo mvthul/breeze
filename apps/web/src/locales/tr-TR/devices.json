@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "Yapay zekâ etkinliği",
+    "count": "Son {{days}} günde {{count}} eylem gönderildi",
+    "tooltip": "Bu cihazda kaydedilen yapay zekâ tarafından gönderilen komut dosyalarını ve komutları sayar. İptal işlemi kendi başına bir eylem olarak sayılır. En iyi çaba esasına göre kaydedilir."
+  },
   "deviceChangeHistoryTab": {
     "title": "Değişiklik Geçmişi",
     "loading": "Değişiklik geçmişi yükleniyor…",
@@ -278,7 +283,21 @@
     "loadMore": "Daha fazlasını yükle",
     "couldnTLoadMore": "Daha fazlası yüklenemedi.",
     "viewAllActivity2": "Tüm etkinlikleri görüntüle",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Öneriyi görüntüle",
+    "trigger": {
+      "manual": "Elle başlatma",
+      "schedule": "Zamanlama",
+      "sweep_finding": "Tarama bulgusu",
+      "alert": "Uyarı",
+      "monitor": "İzleme",
+      "fleet_finding": "Cihaz filosu bulgusu",
+      "policy": "İlke",
+      "automation": "Otomasyon",
+      "ticket": "Destek talebi",
+      "anomaly": "Anormallik",
+      "api": "API çağrısı"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Uyarı geçmişi getirilemedi",
@@ -930,6 +949,23 @@
     "role": "Rol",
     "changeRole": "Rolü değiştir",
     "source": "Kaynak",
+    "function": "İşlev",
+    "changeFunction": "İşlevi değiştir",
+    "functionNone": "Değerlendirilmedi",
+    "functionSource": {
+      "ai": "Yapay Zeka",
+      "manual": "Manuel"
+    },
+    "functionConfidence": "{{pct}}% güven",
+    "functionEvidence": "Tasarımcı neden böyle düşünüyor",
+    "functionEvidenceUnavailable": "Değerlendirme ayrıntıları yüklenemedi.",
+    "functionCustom": "Özel…",
+    "functionCustomSlug": "özel anahtar (a-z, 0-9, -)",
+    "functionCustomLabel": "Etiket",
+    "functionClear": "Temizle",
+    "functionSaved": "Cihaz işlevi kaydedildi",
+    "functionCleared": "Cihaz işlevi temizlendi",
+    "functionSaveFailed": "Cihaz işlevi kaydedilemedi",
     "operatingSystem": "İşletim Sistemi",
     "osType": "İşletim Sistemi Türü",
     "osVersion": "İşletim Sistemi Sürümü",
@@ -1269,6 +1305,9 @@
     "tenantId": "Kiracı Kimliği:",
     "mdmEnrollment": "MDM Kaydı:",
     "detectionSource": "Algılama kaynağı:",
+    "identityDetectionUnsupported": "Katılım algılama desteklenmiyor",
+    "identityDetectionUnsupportedHint": "Breeze bu cihazın işletim sisteminde dizin veya Intune/Entra kaydını henüz denetlemiyor; bu nedenle katılım durumu bilinmiyor — katılmamış olduğu doğrulanmadı.",
+    "flagUnknown": "{{label}}: Bilinmiyor",
     "detectedManagementTools": "Algılanan Yönetim Araçları",
     "tool": "aracı",
     "s": "s",
@@ -1676,7 +1715,10 @@
     "saveChanges": "Değişiklikleri Kaydet",
     "site": "Sitesi",
     "tags": "Etiketler",
-    "title": "Cihaz Ayarları"
+    "title": "Cihaz Ayarları",
+    "purchaseDate": "Satın alma tarihi",
+    "purchaseDateHelp": "Donanım Yaşam Döngüsü raporu değiştirmeyi planlamak için kullanır.",
+    "purchaseDateVendorHint": "Üreticinin sevk tarihinden alındı. Üzerine yazmak için bir tarih girin."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -1880,7 +1922,7 @@
     "refresh": "Yenile",
     "selectedOrganization": "seçilen kuruluş",
     "subtitle": "Filonuzu yönetin ve izleyin.",
-    "title": "Cihazlar",
+    "title": "Cihazlar ve Varlıklar",
     "toasts": {
       "actionFailed": "{{action}}, {{hostname}} üzerinde başarısız oldu",
       "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — hiçbir cihaz gösterilmiyor. Yeniden denemek için filtreyi düzenleyin veya temizleyin.",
@@ -2769,7 +2811,8 @@
       "assignedContactPlaceholder": "Kişi ara…",
       "tags": "Etiketler",
       "tagsPlaceholder": "Virgülle ayrılmış",
-      "notes": "Notlar"
+      "notes": "Notlar",
+      "purchaseDate": "Satın alma tarihi"
     }
   },
   "addNetworkAssetModal": {

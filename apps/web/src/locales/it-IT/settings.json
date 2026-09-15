@@ -1149,6 +1149,18 @@
         "enableSupportUsage": {
           "label": "Utilizzo assistenza",
           "description": "Mostra il totale del tempo di assistenza fatturabile del mese in corso."
+        },
+        "enableService": {
+          "label": "Servizio",
+          "description": "Mostra i deliverable pianificati, quanto consegnato e le date chiave."
+        },
+        "enableDocuments": {
+          "label": "Documenti",
+          "description": "Consente ai clienti di scaricare i documenti condivisi."
+        },
+        "enableLifecycle": {
+          "label": "Ciclo di vita dell'hardware",
+          "description": "Mostra il piano di sostituzione aggiornato dei dispositivi del cliente."
         }
       }
     },
@@ -1502,11 +1514,15 @@
       "timezone": "Fuso orario",
       "kinds": {
         "sweep": "Scansione",
-        "narrative": "Report settimanale"
+        "narrative": "Report settimanale",
+        "design": "Progettazione della flotta",
+        "patch": "Piano patch"
       },
       "kindsLabel": "Controlli da eseguire",
       "kind": "Tipo di pianificazione",
       "weeklyOnlyHint": "Un report settimanale viene attivato esattamente una volta a settimana: minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana da 0 a 6. Ad esempio, 0 7 * * 1 viene eseguito ogni lunedì alle 07:00.",
+      "monthlyOrRarerHint": "Una progettazione della flotta viene attivata al massimo una volta al mese: minuto, ora e giorno-del-mese (1-28) letterali, mese come * o un elenco separato da virgole di mesi letterali, e * per il giorno della settimana. Ad esempio, 0 6 1 1,4,7,10 * viene eseguito trimestralmente il giorno 1 alle 06:00.",
+      "dailyOrRarerHint": "Un piano patch viene attivato al massimo una volta al giorno: minuto e ora letterali, e * o un elenco letterale per giorno-del-mese, mese e giorno della settimana. Ad esempio, 0 2 * * * viene eseguito ogni notte alle 02:00.",
       "kindsRequired": "Seleziona almeno un controllo.",
       "enabled": "Abilitato",
       "override": "Personalizza per questa organizzazione",
@@ -1546,6 +1562,8 @@
         "baselineAgentMismatch": "Quella baseline appartiene a un altro agente.",
         "agentNotPartnerWide": "Le pianificazioni di scansione richiedono un agente valido per tutto il partner.",
         "agentKindNotTriage": "Solo un agente di triage può essere pianificato.",
+        "agentKindNotDesigner": "Una pianificazione di progettazione della flotta deve avere come destinazione un agente Progettista della flotta.",
+        "agentKindNotPatch": "Una pianificazione di piano patch deve avere come destinazione un agente Patch.",
         "kindsNotEmpty": "Una pianificazione di report settimanale non esegue controlli. Rimuovi i controlli selezionati prima di salvare.",
         "invalidCronForKind": "Un report settimanale deve essere attivato esattamente una volta a settimana. Usa minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana."
       }
@@ -1556,7 +1574,8 @@
     "kindHints": {
       "triage": "Analizza i nuovi avvisi e propone cosa fare.",
       "patch": "Esamina le patch mancanti e propone cosa installare.",
-      "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi."
+      "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi.",
+      "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico."
     },
     "emptyState": {
       "title": "Nessun agente per ora",
@@ -1571,7 +1590,8 @@
       "shadowConsequence": "Osserva e propone; una persona approva tutto.",
       "act": "Azione",
       "actConsequence": "Esegue le operazioni consentite senza un clic. Nessun ripristino automatico.",
-      "actUnavailable": "Non ancora disponibile per questo agente."
+      "actUnavailable": "Non ancora disponibile per questo agente.",
+      "shadowUnavailableForKind": "Questo agente legge e scrive solo report — non c'è nulla da osservare in modalità ombra."
     },
     "allOrgs": "Tutte le organizzazioni",
     "allOrgsHint": "A livello di partner: vale per ogni organizzazione, salvo che un’organizzazione la restringa.",
@@ -1579,7 +1599,14 @@
     "stateDisabled": "Disattivato",
     "runningBadge": {
       "running": "In esecuzione",
-      "notRunning": "Non in esecuzione"
+      "notRunning": "Non in esecuzione",
+      "inactive": "Attivato (inattivo)"
+    },
+    "subsystemDisabled": {
+      "title": "Gli agenti IA sono disattivati su questo server",
+      "envFlag": "Imposta {{flag}} per consentire l'esecuzione degli agenti. Fino ad allora ogni attivazione viene ignorata.",
+      "killSwitch": "L'arresto di emergenza della piattaforma è inserito. Gli agenti non verranno eseguiti finché un amministratore non lo rilascia.",
+      "skips": "{{total}} attivazione/i ignorata/e di recente — {{reasons}}"
     },
     "reenableNote": "Ripristinato, ma spento. Rivedi la sua policy prima di attivarlo.",
     "chipLabels": {
@@ -1598,6 +1625,8 @@
       "never": "Mai eseguito",
       "at": "Ultima esecuzione {{at}}"
     },
+    "nextOccurrence": "Prossima esecuzione {{at}}",
+    "runNowNoOrg": "Seleziona un'organizzazione per eseguire un piano patch.",
     "disableDialog": {
       "title": "Disattivare {{name}}?",
       "message": "Le esecuzioni future si fermano, le pianificazioni collegate smettono di attivarsi e le sostituzioni dell’organizzazione per questo agente smettono di applicarsi. Un’esecuzione già in corso prosegue fino al suo limite di tempo.",
@@ -1629,6 +1658,7 @@
       "invalidSupervisedActionKeys": "Una o più azioni selezionate non possono essere autorizzate dalla policy.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Questo agente è già attivo.",
+      "noPatchAgent": "Nessun agente patch si applica a questa organizzazione.",
       "actRecipientsUnreachable": "I ruoli di notifica selezionati non hanno membri attivi, quindi nessuno potrebbe essere interpellato. Scegli un ruolo con membri prima di attivare la modalità Agire.",
       "invalidScriptIds": "Uno o più script non possono essere autorizzati per questo agente.",
       "scriptRejected": "Script {{id}}: {{reason}}",
@@ -1646,7 +1676,8 @@
       "disable": "Disattiva",
       "confirmDisable": "Conferma disattivazione",
       "reenable": "Riattiva",
-      "runs": "Esecuzioni"
+      "runs": "Esecuzioni",
+      "runNow": "Esegui ora"
     },
     "toasts": {
       "saved": "Agente salvato",
@@ -1654,7 +1685,9 @@
       "disabled": "Agente disattivato",
       "disableFailed": "Impossibile disattivare l’agente.",
       "reenabled": "Agente riattivato",
-      "reenableFailed": "Impossibile riattivare l’agente."
+      "reenableFailed": "Impossibile riattivare l’agente.",
+      "runNowQueued": "Esecuzione del piano patch in coda",
+      "runNowFailed": "Impossibile avviare un'esecuzione del piano patch."
     },
     "issues": {
       "name": "Assegna un nome all’agente.",
@@ -1685,7 +1718,8 @@
     "kinds": {
       "triage": "Triage degli avvisi",
       "patch": "Gestione delle patch",
-      "helpdesk": "Assistenza"
+      "helpdesk": "Assistenza",
+      "designer": "Progettista della flotta"
     },
     "modes": {
       "off": "Disattivato",
@@ -1820,7 +1854,8 @@
       "profile": {
         "sweep": "Scansione",
         "narrative": "Report settimanale",
-        "triage": "Triage dei ticket"
+        "triage": "Triage dei ticket",
+        "design": "Progettazione della flotta"
       },
       "sweep": {
         "title": "Rilevazioni della scansione",
@@ -1857,7 +1892,80 @@
           "not_allowlisted": "Strumento non consentito per questo agente",
           "no_eligible_approvers": "Nessun approvatore idoneo",
           "intent_error": "Impossibile creare l’approvazione",
-          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione"
+          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione",
+          "intent_invalid_provenance": "Impossibile convalidare l’approvazione (errore interno)"
+        }
+      },
+      "patch": {
+        "title": "Piano patch",
+        "empty": "L'agente non ha proposto alcun lavoro di patch.",
+        "evidenceTruncated": "Le evidenze sono state troncate: non tutte le righe corrispondenti sono state mostrate all'agente.",
+        "posture": "{{compliance}}% conforme · {{count}} dispositivo a rischio",
+        "posture_other": "{{compliance}}% conforme · {{count}} dispositivi a rischio",
+        "patchCount": "{{count}} aggiornamento",
+        "patchCount_other": "{{count}} aggiornamenti",
+        "refused": "Non registrato: {{reason}}",
+        "unconfirmed": "Questo piano non è mai stato confermato — l'agente non ha potuto riverificare le sue voci rispetto alle evidenze, quindi nulla di quanto segue è stato convalidato.",
+        "unconfirmedItem": "Non confermato — questa voce non è mai stata riverificata.",
+        "intentCreated": "In attesa di approvazione — apri la scheda",
+        "suppressed": "Già proposto: {{reason}}",
+        "capReached": "Non proposto: {{reason}}",
+        "intentError": "Impossibile creare la scheda di approvazione: {{reason}}",
+        "dropped": "{{count}} aggiornamento è stato escluso dalla scheda",
+        "dropped_other": "{{count}} aggiornamenti sono stati esclusi dalla scheda",
+        "counts": "{{created}} in attesa di approvazione · {{suppressed}} già proposti",
+        "failureClass": "Classe di errore: {{label}}",
+        "attempts": "{{count}} tentativo non riuscito",
+        "attempts_other": "{{count}} tentativi non riusciti",
+        "escalation": "Richiede una persona: non verrà ritentato automaticamente.",
+        "escalations": "{{count}} inoltro urgente",
+        "escalations_other": "{{count}} inoltri urgenti",
+        "classes": {
+          "install": "Installazione",
+          "approval_advisory": "Consiglio di approvazione",
+          "reboot_plan": "Piano di riavvio",
+          "chase": "Sollecito per errore",
+          "escalation": "Inoltro urgente"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Dispositivo assente nelle evidenze delle patch",
+          "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione",
+          "patch_not_in_evidence": "Aggiornamento assente dalle evidenze delle patch",
+          "window_not_resolved": "Impossibile risolvere la finestra di manutenzione",
+          "job_result_not_in_evidence": "Risultato del lavoro di patch assente dalle evidenze",
+          "no_eligible_patches": "Nessun aggiornamento è attualmente idoneo per questo dispositivo",
+          "not_allowlisted": "L'agente non è autorizzato a proporre installazioni",
+          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione",
+          "no_eligible_approvers": "Nessuno può approvare questa azione",
+          "intent_error": "Impossibile creare l'approvazione",
+          "live_intent_exists": "Una scheda di approvazione per questo aggiornamento è già aperta",
+          "recently_rejected": "Questo aggiornamento è stato rifiutato di recente",
+          "recently_cancelled": "La scheda di questo aggiornamento è stata annullata di recente",
+          "recently_completed": "Questo aggiornamento è stato installato di recente",
+          "failure_class_mismatch": "La classe di errore citata non corrisponde alle evidenze",
+          "class_not_retryable": "Questo tipo di errore non viene mai ritentato automaticamente",
+          "chase_attempts_exhausted": "Raggiunto il limite di tentativi per questo aggiornamento: inoltrato invece",
+          "attempt_count_mismatch": "Il numero di tentativi citato non corrisponde alle evidenze",
+          "failure_history_truncated": "La cronologia degli errori era incompleta, quindi il numero di tentativi non era affidabile"
+        },
+        "ineligible": {
+          "not_outstanding": "Non in sospeso su questo dispositivo",
+          "superseded": "Sostituito da un aggiornamento più recente",
+          "blocked_by_source": "Escluso dalle origini di aggiornamento della policy",
+          "held_by_deferral": "Trattenuto dalla finestra di differimento",
+          "blocked_by_category": "Escluso dalle regole di categoria dell'anello",
+          "blocked_by_app_rule": "Bloccato da una regola dell'app",
+          "awaiting_manual_approval": "In attesa di approvazione manuale",
+          "no_ring_resolved": "Il dispositivo non ha un anello di aggiornamento",
+          "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione"
+        },
+        "failureClasses": {
+          "transient": "Transitorio",
+          "needs_reboot": "Riavvio necessario",
+          "disk_space": "Spazio su disco",
+          "store_corrupt": "Archivio aggiornamenti danneggiato",
+          "permanent": "Permanente",
+          "unknown": "Sconosciuto"
         }
       },
       "narrative": {
@@ -1866,7 +1974,25 @@
         "truncatedNote": "Il contesto dell'agente è stato troncato: questa sintesi non ha visto l'intera settimana.",
         "openReport": "Apri il report",
         "download": "Scarica il PDF",
-        "downloadFailed": "Impossibile scaricare il PDF."
+        "downloadFailed": "Impossibile scaricare il PDF.",
+        "delivery": {
+          "sent": "Inviato via e-mail a {{sent}} destinatari su {{total}}",
+          "refused_one": "{{count}} destinatario non ha ricevuto l’e-mail: autorizzazione al report, indirizzo mancante o rifiuto del provider.",
+          "refused_other": "{{count}} destinatari non hanno ricevuto l’e-mail: autorizzazione al report, indirizzo mancante o rifiuto del provider.",
+          "pending_one": "{{count}} consegna non è ancora stata inviata: verrà ritentata.",
+          "pending_other": "{{count}} consegne non sono ancora state inviate: verranno ritentate.",
+          "unknown_one": "{{count}} consegna non ha potuto essere confermata: il provider e-mail non ha dato una risposta definitiva.",
+          "unknown_other": "{{count}} consegne non hanno potuto essere confermate: il provider e-mail non ha dato una risposta definitiva.",
+          "recipientsUnresolved": "La ricerca dei destinatari non è riuscita, quindi questa sintesi non è stata inviata a nessuno. Il report è stato comunque salvato."
+        }
+      },
+      "fleetDesign": {
+        "title": "Progettazione della flotta",
+        "counts": "{{functions}} funzioni · {{watches}} monitoraggi · {{rules}} regole di avviso",
+        "openReport": "Apri il report",
+        "download": "Scarica il PDF",
+        "downloadFailed": "Impossibile scaricare il PDF.",
+        "truncatedNote": "Le evidenze sono state troncate — questa progettazione non ha visto l'intera flotta."
       },
       "noAgent": "Agente sconosciuto",
       "loading": "Caricamento delle esecuzioni…",
@@ -1932,6 +2058,9 @@
             "skipped": "Verifica saltata"
           },
           "viewApproval": "Rivedi in Approvazioni"
+        },
+        "progress": {
+          "title": "Avanzamento"
         },
         "ledger": {
           "title": "Esecuzioni degli strumenti",
@@ -2129,6 +2258,7 @@
           "fixWatchesHeld": "Monitoraggi di correzione mantenuti",
           "fixWatchesRecurred": "Monitoraggi di correzione ricorrenti",
           "narrativesDelivered": "Report settimanali consegnati",
+          "fleetDesignsDelivered": "Fleet Design consegnati",
           "estTimeSaved": "Tempo risparmiato stimato",
           "llmSpend": "Spesa LLM",
           "window": "Finestra del report (giorni)",
@@ -2137,6 +2267,31 @@
         },
         "weightRowLabel": "{{label}} (minuti accreditati)",
         "neverRebuilt": "Mai ricostruito"
+      },
+      "measured": {
+        "heading": "Misurato (correlazionale)",
+        "caption": "Lavoro toccato dall'IA rispetto a lavoro non toccato, dello stesso tipo e nella stessa finestra. Non è un confronto prima/dopo né un'affermazione causale: l'IA di solito arriva prima ai casi più semplici.",
+        "alertResolution": "Risoluzione degli avvisi, per regola",
+        "ticketFirstResponse": "Prima risposta al ticket, per priorità e categoria",
+        "technicianMinutes": "Minuti tecnico registrati",
+        "armAiTouched": "Toccato dall'IA",
+        "armUntouched": "Non toccato",
+        "withinHorizonAlerts": "Risolti entro 24 h",
+        "withinHorizonTickets": "Prima risposta entro 4 h",
+        "cohortSize": "{n} nella coorte",
+        "percentileP50": "p50: {minutes} min",
+        "percentileP90": "p90: {minutes} min",
+        "recordedMinutesValue": "{minutes} min (mediana)",
+        "loggingCoverage": "Tempo registrato sul {ai} dei ticket toccati dall'IA e sul {untouched} degli altri. Una mediana su ticket registrati solo in parte non è una mediana del lavoro.",
+        "censoredNote": "Ogni percentile mostrato è censurato a destra: i casi ancora aperti contano come non conclusi invece di essere scartati.",
+        "loading": "Caricamento del confronto misurato…",
+        "error": "Impossibile caricare il confronto misurato.",
+        "omitted": {
+          "insufficientData": "Dati insufficienti: nessun gruppo di lavoro confrontabile ha almeno 20 casi per ciascun lato.",
+          "insufficientFollowup": "Questa finestra è troppo breve per osservare l'esito di un numero sufficiente di casi. Prova una finestra più lunga.",
+          "insufficientAuthority": "Non disponi dell'autorizzazione sulle registrazioni di tempo necessaria per vedere i minuti tecnico registrati.",
+          "siteRestricted": "Il confronto misurato non viene mostrato con accesso limitato per sede, perché aggrega dati di un'intera organizzazione."
+        }
       }
     },
     "graduation": {
@@ -2236,6 +2391,10 @@
           "label": "Script e comandi",
           "description": "Eseguire script, playbook e comandi di sistema, e gestire i processi, le attività pianificate e le voci di registro coinvolte."
         },
+        "author_scripts": {
+          "label": "Creare script",
+          "description": "Scrivere un nuovo script come proposta per una revisione indipendente. Nulla di ciò che un agente scrive viene eseguito finché non è stato revisionato e approvato."
+        },
         "tickets": {
           "label": "Ticket di assistenza",
           "description": "Esaminare i ticket dell'helpdesk e proporre risposte o i prossimi passi."
@@ -2279,6 +2438,10 @@
         "tenancy": {
           "label": "Gestione organizzazioni",
           "description": "Gestire organizzazioni, sedi e integrazioni tra organizzazioni."
+        },
+        "workspace": {
+          "label": "Sandbox di analisi dei dati",
+          "description": "Esporta i set di dati della flotta ed esegui codice di analisi in una sandbox isolata, senza rete e senza accesso ai dispositivi. I risultati tornano come proposte che un tecnico approva."
         }
       },
       "tools": {
@@ -2685,7 +2848,8 @@
       "loggedProposalCount_other": "{{count}} proposte registrate",
       "unattendedCount_one": "{{count}} senza supervisione",
       "unattendedCount_other": "{{count}} senza supervisione",
-      "scriptGateNote": "Resta una richiesta di approvazione finché uno script non viene autorizzato per questo agente."
+      "scriptGateNote": "Resta una richiesta di approvazione finché uno script non viene autorizzato per questo agente.",
+      "designerReadOnly": "Il Progettista della flotta ha accesso a ogni strumento di sola lettura e a uno strumento di report. Non ha capacità di modifica da scegliere."
     },
     "summary": {
       "edit": "Modifica",
@@ -2786,6 +2950,11 @@
           "blurb": "Gestisce i ticket non appena vengono creati, ricevono una risposta o vengono risolti.",
           "runsWhen": "un ticket viene creato, riceve la sua prima risposta o viene contrassegnato come risolto",
           "recommended": "riavviare i servizi e liberare spazio su disco per risolvere le richieste comuni"
+        },
+        "designer": {
+          "blurb": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
+          "runsWhen": "avvii una Progettazione della flotta per un'organizzazione, oppure in base a una pianificazione trimestrale",
+          "recommended": "una migrazione da zero, oppure un audit di configurazione trimestrale"
         }
       },
       "kindCard": {
@@ -2939,7 +3108,9 @@
     "loadingApproverDevices": "Caricamento dispositivi approvatori…",
     "tryAgain": "Riprova",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Nessun dispositivo approvatore ancora registrato. Accedi all'app mobile Breeze sul telefono e apparirà qui automaticamente, oppure registra questo browser qui sotto per approvare con una biometria.",
-    "platformBound": "Vincolato alla piattaforma",
+    "hardwareAttested": "Attestato via hardware",
+    "notAttested": "Non attestato",
+    "notAttestedTooltip": "Le approvazioni critiche non sono disponibili su questo dispositivo finché non viene ri-registrato con una versione attestata dell'app.",
     "registered": "Registrato",
     "lastUsed": "Ultimo utilizzo",
     "cancel": "Annulla",
@@ -4422,27 +4593,10 @@
       "suspended": "Sospesa",
       "churned": "Persa",
       "offboarding": "In dismissione"
+    },
+    "help": {
+      "slug": "Generato dal nome. Univoco nel tuo account; usato dall'API e dalle integrazioni."
     }
-  },
-  "organizationList": {
-    "title": "Organizzazioni",
-    "count": "{{filtered}} di {{total}} organizzazioni",
-    "searchPlaceholder": "Cerca organizzazioni",
-    "allStatuses": "Tutti gli stati",
-    "status": {
-      "active": "Attiva",
-      "trial": "Prova",
-      "suspended": "Sospesa",
-      "churned": "Persa",
-      "offboarding": "In dismissione",
-      "merging": "Fusione in corso",
-      "archived": "Archiviata",
-      "purging": "Eliminazione in corso"
-    },
-    "columns": {
-      "devices": "Dispositivi"
-    },
-    "empty": "Nessuna organizzazione trovata. Prova a modificare ricerca o filtri."
   },
   "bulkOrgImport": {
     "title": "Importazione in blocco",
@@ -4506,23 +4660,11 @@
     }
   },
   "organizationsPage": {
-    "loading": "Caricamento organizzazioni...",
-    "title": "Organizzazioni e siti",
-    "description": "Gestisci le organizzazioni e i relativi siti.",
     "actions": {
-      "addOrganization": "Aggiungi organizzazione",
-      "tryAgain": "Riprova",
-      "editOrganization": "Modifica organizzazione",
-      "archiveOrganization": "Archivia organizzazione",
-      "deleting": "Eliminazione...",
-      "openRecord": "Apri scheda",
-      "openSettings": "Impostazioni"
+      "tryAgain": "Riprova"
     },
     "errors": {
-      "fetchOrganizations": "Impossibile recuperare le organizzazioni",
       "generic": "Si è verificato un errore",
-      "saveOrder": "Impossibile salvare l'ordine delle organizzazioni",
-      "saveOrganization": "Impossibile salvare l'organizzazione",
       "saveSite": "Impossibile salvare il sito ({{status}})",
       "deleteSite": "Impossibile eliminare il sito",
       "loadSites": "Impossibile caricare i siti di questa organizzazione."
@@ -4537,25 +4679,8 @@
       "archived": "Archiviata",
       "purging": "Eliminazione in corso"
     },
-    "deviceCount": "{{count}} dispositivi",
-    "list": {
-      "title": "Organizzazioni",
-      "searchPlaceholder": "Cerca...",
-      "empty": "Nessuna organizzazione trovata.",
-      "noMatches": "Nessuna organizzazione corrisponde alla ricerca.",
-      "dragToReorder": "Trascina per riordinare"
-    },
     "sites": {
       "loading": "Caricamento siti..."
-    },
-    "emptySelection": {
-      "title": "Nessuna organizzazione selezionata",
-      "description": "Seleziona un'organizzazione dall'elenco per visualizzarne i siti."
-    },
-    "add": {
-      "title": "Aggiungi organizzazione",
-      "description": "Crea una nuova organizzazione con i dettagli qui sotto.",
-      "submit": "Crea organizzazione"
     },
     "siteModal": {
       "editTitle": "Modifica sito",
@@ -4571,11 +4696,11 @@
     },
     "deleteSite": {
       "title": "Elimina sito",
-      "messagePrefix": "Vuoi davvero eliminare",
-      "messageSuffix": " Questa azione non può essere annullata."
+      "message": "Eliminare {{name}}? Il sito verrà rimosso definitivamente e l'operazione non può essere annullata.",
+      "blockedMessage_one": "{{name}} ha ancora {{count}} dispositivo. Spostalo in un altro sito prima di eliminare questo.",
+      "blockedMessage_other": "{{name}} ha ancora {{count}} dispositivi. Spostali in un altro sito prima di eliminare questo."
     },
     "merge": {
-      "openButton": "Unisci a un'altra organizzazione",
       "title": "Unisci organizzazione",
       "description": "Sposta i dati di {{name}} in un'organizzazione superstite. {{name}} viene quindi ritirata permanentemente e non può essere recuperata.",
       "survivorLabel": "Unisci a",
@@ -4642,36 +4767,6 @@
       "errors": {
         "archive": "Impossibile archiviare l'organizzazione",
         "mfaRequired": "L'archiviazione delle organizzazioni richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova."
-      }
-    },
-    "archived": {
-      "sectionTitle": "Archiviate",
-      "loading": "Caricamento delle organizzazioni archiviate...",
-      "empty": "Nessuna organizzazione archiviata.",
-      "noMatches": "Nessuna organizzazione archiviata corrisponde alla ricerca.",
-      "badge": "Archiviata",
-      "archivingBadge": "Archiviazione in corso…",
-      "keptIndefinitely": "Conservata indefinitamente",
-      "purgeToday": "Eliminata definitivamente oggi",
-      "purgeCountdown_one": "Eliminata definitivamente tra {{count}} giorno",
-      "purgeCountdown_other": "Eliminata definitivamente tra {{count}} giorni",
-      "truncatedNote": "Vengono mostrate le prime {{count}} organizzazioni archiviate. Cerca per restringere l'elenco.",
-      "readOnlyNotice": "Questa organizzazione è archiviata ed è in sola lettura. Ripristinala per riprendere l'accesso normale.",
-      "drainNotice": "Questa organizzazione è in fase di archiviazione — i suoi agenti sono in corso di disinstallazione, e rimane in sola lettura finché il processo non sarà completato. Ripristinala per annullare l'operazione e farla tornare.",
-      "errors": {
-        "fetch": "Impossibile caricare le organizzazioni archiviate"
-      }
-    },
-    "restore": {
-      "action": "Ripristina",
-      "restoring": "Ripristino in corso...",
-      "success": "{{name}} ripristinata — stato: {{status}}.",
-      "recreateRequiredNote": "Prima che sia di nuovo pienamente utilizzabile: {{items}}",
-      "suspendedNote": "Era sospesa prima dell'archiviazione, quindi è stata ripristinata come sospesa — risolvi questo aspetto prima che riprenda l'accesso normale.",
-      "errors": {
-        "restore": "Impossibile ripristinare l'organizzazione",
-        "mfaRequired": "Il ripristino delle organizzazioni richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova.",
-        "purging": "Questa organizzazione è già in fase di eliminazione definitiva e non può più essere ripristinata."
       }
     }
   },
@@ -4770,7 +4865,9 @@
     "count": "{{filtered}} di {{total}} siti",
     "searchPlaceholder": "Cerca siti",
     "actions": {
-      "add": "Aggiungi sito"
+      "add": "Aggiungi sito",
+      "editSite": "Modifica {{name}}",
+      "deleteSite": "Elimina {{name}}"
     },
     "columns": {
       "timezone": "Fuso orario",
@@ -5305,5 +5402,82 @@
       "conflict": "Conflitto",
       "orgNotFound": "Organizzazione non trovata"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Creazione di script",
+    "subtitle": "Consenti all'assistente e ai tuoi agenti di scrivere, revisionare e — quando lo autorizzi — eseguire script senza una scheda di approvazione.",
+    "partnerCard": {
+      "title": "Limite del partner",
+      "description": "L'impostazione più ampia che qualsiasi organizzazione di questo partner può utilizzare. Le singole organizzazioni possono solo restringerla.",
+      "readOnly": "Solo un amministratore partner con accesso completo alle organizzazioni può modificare il limite.",
+      "missing": "Il tuo partner non ha ancora concesso un limite, quindi la modalità non presidiata non può essere abilitata qui."
+    },
+    "orgCard": {
+      "title": "Questa organizzazione",
+      "description": "Un'autorizzazione esplicita. La modalità non presidiata resta disattivata finché sia il limite del partner sia questo interruttore non lo consentono.",
+      "noOrgSelected": "Seleziona un'organizzazione per gestirne le impostazioni di creazione script."
+    },
+    "fields": {
+      "proposingEnabled": "Consenti all'IA di proporre script",
+      "unattendedAllowed": "Consenti alle organizzazioni di usare la modalità non presidiata",
+      "unattendedEnabled": "Esegui gli script approvati a basso rischio senza una scheda di approvazione",
+      "maxRiskTier": "Livello di rischio massimo consentito in modalità non presidiata",
+      "allowedClasses": "Cosa può toccare uno script non presidiato",
+      "perHour": "Numero massimo di esecuzioni non presidiate all'ora",
+      "reviewerModel": "Modello di revisione",
+      "reviewerModelHint": "Lascia vuoto per usare il valore predefinito della piattaforma.",
+      "protectedResources": "Non toccare mai questi elementi",
+      "protectedServices": "Servizi",
+      "protectedPaths": "Percorsi",
+      "protectedRegistryKeys": "Chiavi di registro",
+      "protectedDeviceTags": "Tag dispositivo"
+    },
+    "tier": {
+      "low": "Basso",
+      "medium": "Medio"
+    },
+    "class": {
+      "registry": "Registro",
+      "services": "Servizi",
+      "processes": "Processi",
+      "files_system": "File di sistema",
+      "files_user": "File utente",
+      "temp_files": "File temporanei",
+      "network_egress": "Traffico di rete in uscita",
+      "firewall": "Firewall",
+      "credentials": "Credenziali",
+      "users_groups": "Utenti e gruppi",
+      "packages": "Pacchetti",
+      "scheduled_tasks": "Attività pianificate",
+      "disk": "Disco",
+      "boot": "Configurazione di avvio",
+      "security_tooling": "Strumenti di sicurezza",
+      "dns_cache": "Cache DNS",
+      "printing": "Stampa",
+      "browser": "Browser",
+      "shell_eval": "Codice dinamico"
+    },
+    "windowsOnly": "Solo Windows",
+    "hardDenied": "Mai disponibile in modalità non presidiata, qualunque cosa dica il limite.",
+    "aboveCeiling": "Il tuo partner non lo consente.",
+    "lane": {
+      "closedTitle": "La modalità non presidiata funziona normalmente",
+      "openTitle": "La modalità non presidiata è in pausa",
+      "openBody": "{{reason}} Le esecuzioni non presidiate vengono rifiutate finché un approvatore non ripristina la modalità. Le approvazioni continuano a funzionare normalmente.",
+      "reset": "Ripristina la modalità",
+      "resetStepUpBody": "Il ripristino della corsia non presidiata richiede un nuovo controllo di sicurezza.",
+      "resetSuccess": "La modalità non presidiata è di nuovo attiva.",
+      "resetFailed": "Impossibile ripristinare la modalità."
+    },
+    "stepUp": {
+      "title": "Conferma che sei tu",
+      "body": "Abilitare le esecuzioni non presidiate richiede un nuovo controllo di sicurezza."
+    },
+    "save": "Salva",
+    "saving": "Salvataggio…",
+    "saved": "Impostazioni di creazione script salvate.",
+    "saveFailed": "Non è stato possibile salvare queste impostazioni.",
+    "loading": "Caricamento…",
+    "loadFailed": "Non è stato possibile caricare le impostazioni di creazione script."
   }
 }

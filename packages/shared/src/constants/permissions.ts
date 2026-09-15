@@ -80,6 +80,22 @@ export const PERMISSION_GRANTS = {
   CONTRACTS_READ: { resource: 'contracts', action: 'read' },
   CONTRACTS_WRITE: { resource: 'contracts', action: 'write' },
   CONTRACTS_MANAGE: { resource: 'contracts', action: 'manage' },
+  // Organization document library + key dates (service deliverables, spec §10).
+  // Deliberately NOT folded into `contracts`: a runbook or an onboarding
+  // baseline is org-record content that outlives any contract, and a partner
+  // may want a technician who can file documents without touching billing.
+  DOCUMENTS_READ: { resource: 'documents', action: 'read' },
+  DOCUMENTS_WRITE: { resource: 'documents', action: 'write' },
+
+  // Agreement templates + signed agreements (agreements vocabulary & IA split,
+  // spec §4). Deliberately NOT folded into `contracts`: a billing contract and
+  // the MSA a customer signs are different objects with different audiences —
+  // an MSP may want a technician who can pull up the signed MSA without
+  // touching recurring billing, and a billing clerk who runs contracts without
+  // authoring legal terms. No `manage` action: publish and archive are write
+  // operations on a template, so there is nothing left for a third verb to gate.
+  AGREEMENTS_READ: { resource: 'agreements', action: 'read' },
+  AGREEMENTS_WRITE: { resource: 'agreements', action: 'write' },
 
   // Quotes / Proposals (billing program — sub-project 4)
   QUOTES_READ: { resource: 'quotes', action: 'read' },

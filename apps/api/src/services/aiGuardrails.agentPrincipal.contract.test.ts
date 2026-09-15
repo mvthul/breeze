@@ -13,6 +13,7 @@ import {
   TIER3_ACTIONS,
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
+  TIER1_NON_READONLY_TOOLS,
 } from './aiGuardrails';
 import {
   isSecretBearingTool,
@@ -179,6 +180,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'analyze_fleet_metrics',
   'analyze_metrics',
   'configuration_policy_compliance',
+  'export_dataset',
   'get_active_users',
   'get_catalog_item',
   'get_cis_compliance',
@@ -204,6 +206,10 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_script_details',
   'get_script_execution',
   'get_script_execution_history',
+  // AI script authoring: tier 1 by design — a proposal is inert until a
+  // Tier-3 run_script consumes it, and the handler itself returns
+  // feature_disabled while BREEZE_AI_SCRIPT_AUTHORING_ENABLED is off.
+  'get_script_proposal',
   'get_security_posture',
   'get_service_monitoring_status',
   'get_user_experience_metrics',
@@ -215,7 +221,11 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'google_security_drift',
   'list_configuration_policies',
   'list_contracts',
+  'list_deliverable_templates',
   'list_invoices',
+  // W03: read-only document METADATA, same admission shape as the sibling
+  // business-object list tools; bytes are not reachable from any tool.
+  'list_org_documents',
   'list_organizations',
   'list_playbooks',
   'list_quotes',
@@ -235,6 +245,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'manage_maintenance_windows',
   'manage_service_monitors',
   'preview_configuration_change',
+  'propose_script',
   'query_audit_log',
   'query_change_log',
   'query_devices',
@@ -353,6 +364,18 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
 
   it('shadow mode admits no mutating tool, even an allowlisted one', () => {
     for (const toolName of Object.keys(TOOL_TIERS)) {
+      // Execution plane W04 (#5715): the four `workspace_*` tools are the ONE
+      // deliberate exception, and they are named here rather than derived so
+      // widening the exception takes an edit to this security suite. They are
+      // not read-only (that is what makes them allowlist-gated), but there is
+      // nothing for shadow mode to protect: the sandbox is inert, reachable
+      // only by the run that owns it, and a "proposal" to write a file into it
+      // is not something a human could meaningfully approve. See
+      // TIER1_NON_READONLY_TOOLS in aiGuardrails.ts and the ordering proof in
+      // aiGuardrails.workspace.contract.test.ts (the forced-allow sits AFTER
+      // every structural deny, so allowlist and protected-resource refusals
+      // still win).
+      if (TIER1_NON_READONLY_TOOLS.has(toolName)) continue;
       const shadow = checkAgentGuardrails(toolName, {}, {
         ...EMPTY, mode: 'shadow', toolAllowlist: [toolName],
       });
@@ -361,6 +384,12 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
         expect(shadow.allowed, `${toolName} mutated under shadow mode`).toBe(false);
       }
     }
+  });
+
+  it('the shadow-mode exception is exactly the four workspace tools, and no more', () => {
+    expect([...TIER1_NON_READONLY_TOOLS].sort()).toEqual([
+      'workspace_cancel', 'workspace_collect', 'workspace_run', 'workspace_stage',
+    ]);
   });
 
   it('finds a protected path nested inside a parameter object', () => {

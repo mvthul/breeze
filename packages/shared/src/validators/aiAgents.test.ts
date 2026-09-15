@@ -1,18 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
   aiAgentActAssetsSchema,
+  aiAgentLimitsPatchSchema,
   aiAgentLimitsSchema,
   aiAgentPolicyFieldsSchema,
   aiAgentTriggersPatchSchema,
   alertVerdictOutcomeSchema,
+  analysisOutcomeSchema,
   createAiAgentSchema,
   updateAiAgentSchema,
 } from './aiAgents';
 import {
+  AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_POLICY_SNAPSHOT_VERSION,
   AI_AGENT_TRIGGER_KINDS,
   SUPPORTED_AGENT_MODES,
+  allowedModesForKind,
   minAgentMode,
 } from '../types/aiAgents';
 
@@ -138,8 +142,8 @@ describe('aiAgents validators', () => {
     expect(aiAgentLimitsSchema.safeParse({ promoteThreshold: 201 }).success).toBe(false);
   });
 
-  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 9 (phase 2 P2-5 bump)', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(9);
+  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 12 (execution plane W04 bump)', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(12);
   });
 
   it('rejects instructions over 2000 chars and unknown allowlist shapes', () => {
@@ -422,7 +426,7 @@ describe('limits v6', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour).toBe(20);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepBudgetCentsPerRun).toBe(30);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepMaxTurns).toBe(8);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(9);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(12);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentSweepRuns: 11 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxSweepRunsPerHour: 201 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, sweepBudgetCentsPerRun: 4 }).success).toBe(false);
@@ -436,7 +440,7 @@ describe('limits v7', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour).toBe(5);
     expect(AI_AGENT_LIMIT_DEFAULTS.narrativeBudgetCentsPerRun).toBe(20);
     expect(AI_AGENT_LIMIT_DEFAULTS.narrativeMaxTurns).toBe(3);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(9);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(12);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentNarrativeRuns: 6 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxNarrativeRunsPerHour: 51 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, narrativeBudgetCentsPerRun: 4 }).success).toBe(false);
@@ -454,7 +458,7 @@ describe('limits v8', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour).toBe(30);
     expect(AI_AGENT_LIMIT_DEFAULTS.triageBudgetCentsPerRun).toBe(10);
     expect(AI_AGENT_LIMIT_DEFAULTS.triageMaxTurns).toBe(6);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(9);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(12);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentTriageRuns: 11 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxTriageRunsPerHour: 201 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, triageBudgetCentsPerRun: 51 }).success).toBe(false);
@@ -463,5 +467,94 @@ describe('limits v8', () => {
     // default outside its own bound is the classic way a limits bump ships
     // broken (the parse below fails if any of the four is out of range).
     expect(aiAgentLimitsSchema.parse({ ...AI_AGENT_LIMIT_DEFAULTS })).toEqual(AI_AGENT_LIMIT_DEFAULTS);
+  });
+});
+
+describe('designer kind', () => {
+  it('is a create-able kind whose modes exclude shadow', () => {
+    expect(AI_AGENT_KINDS).toContain('designer');
+    expect(allowedModesForKind('designer')).toEqual(['off', 'act']);
+    expect(allowedModesForKind('triage')).toEqual(['off', 'shadow', 'act']);
+    const base = { name: 'Designer', kind: 'designer', ownerScope: 'partner' };
+    expect(createAiAgentSchema.safeParse({ ...base, mode: 'shadow' }).success).toBe(false);
+    expect(createAiAgentSchema.safeParse({ ...base, mode: 'act' }).success).toBe(true);
+  });
+  it('bounds the design limits', () => {
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxDesignRunsPerDay: 25 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, designBudgetCentsPerRun: 24 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse(AI_AGENT_LIMIT_DEFAULTS).success).toBe(true);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(12);
+  });
+});
+
+describe('analysis limits bounds (execution plane W04, spec §5.4)', () => {
+  it('accepts the defaults', () => {
+    expect(aiAgentLimitsPatchSchema.safeParse(AI_AGENT_LIMIT_DEFAULTS).success).toBe(true);
+  });
+
+  it.each([
+    ['analysisMaxInputDevicesPerRun', 201],
+    ['analysisMaxTurnsPerRun', 81],
+    ['analysisWallClockSeconds', 1801],
+    ['analysisMaxComputeSeconds', 3601],
+    ['analysisMaxComputeCentsPerRun', 201],
+    ['analysisMaxStagedBytesPerRun', 1024 * 1024 * 1024 + 1],
+    ['analysisMaxArtifactBytesPerRun', 512 * 1024 * 1024 + 1],
+    ['analysisMaxBudgetCentsPerRun', 501],
+    ['analysisMaxRunsPerHour', 101],
+    ['analysisMaxConcurrentRuns', 6],
+    ['analysisMaxStepTimeoutSeconds', 601],
+    ['analysisMaxStepsPerRun', 101],
+  ] as const)('rejects %s above its bound', (field, value) => {
+    expect(aiAgentLimitsPatchSchema.safeParse({ [field]: value }).success).toBe(false);
+  });
+});
+
+describe('analysisOutcomeSchema (execution plane W04)', () => {
+  const handle = () => '11111111-1111-4111-8111-111111111111';
+
+  it('accepts a minimal outcome and rejects oversize collections', () => {
+    expect(analysisOutcomeSchema.safeParse({
+      summary: 'ok', findings: [], artifactHandles: [], proposedActions: [],
+    }).success).toBe(true);
+    expect(analysisOutcomeSchema.safeParse({
+      summary: 'x'.repeat(4001), findings: [], artifactHandles: [], proposedActions: [],
+    }).success).toBe(false);
+    expect(analysisOutcomeSchema.safeParse({
+      summary: 'ok',
+      findings: [],
+      artifactHandles: Array.from({ length: 101 }, handle),
+      proposedActions: [],
+    }).success).toBe(false);
+  });
+
+  it('rejects unknown keys on a proposed action (strict)', () => {
+    expect(analysisOutcomeSchema.safeParse({
+      summary: 'ok',
+      findings: [],
+      artifactHandles: [],
+      proposedActions: [{ tool: 'manage_services', args: {}, rationale: 'r', execute: true }],
+    }).success).toBe(false);
+  });
+
+  it('accepts a full outcome with findings and proposals', () => {
+    expect(analysisOutcomeSchema.safeParse({
+      summary: 'ok',
+      findings: [{ title: 't', severity: 'high', detail: 'd', artifactHandles: [handle()] }],
+      artifactHandles: [handle()],
+      proposedActions: [{
+        tool: 'manage_services',
+        action: 'restart',
+        deviceId: '22222222-2222-4222-8222-222222222222',
+        args: { name: 'spooler' },
+        rationale: 'stopped since boot',
+      }],
+    }).success).toBe(true);
+  });
+
+  it('rejects a non-uuid artifact handle', () => {
+    expect(analysisOutcomeSchema.safeParse({
+      summary: 'ok', findings: [], artifactHandles: ['../../etc/passwd'], proposedActions: [],
+    }).success).toBe(false);
   });
 });
