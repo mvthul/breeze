@@ -1,4 +1,4 @@
-import { remediationTriggerSchema, type RemediationTrigger } from '@breeze/shared';
+import { isTenantToolName, remediationTriggerSchema, type RemediationTrigger } from '@breeze/shared';
 import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
@@ -7,13 +7,15 @@ import {
   actionIntentTaskContextSchema,
   type ActionIntentTaskContext,
   type AiAgentPolicySnapshot,
+  type AiSweepKind,
   type AssuranceLevel,
   type ScriptReviewerEvidence,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type Database, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
-import { policyDecideEnabled } from '../../config/env';
+import { policyDecideEnabled, sweepActEnabled } from '../../config/env';
+import { subjectMatchesArguments } from './intentTargetScope';
 import {
   actionIntents,
   intentOutbox,
@@ -207,6 +209,15 @@ export interface CreateActionIntentInput {
    */
   scope?: { deviceId: string } | { ticketId: string };
   /**
+   * #4442 W04 — the sweep-act eligibility the CALLER assembled from system
+   * state (`sweepFindings.ts`: the effective schedule act mode plus the
+   * trusted evidence subject it matched). Agent principal only, and only ever
+   * meaningful alongside `trigger.kind === 'sweep_finding'` and a device
+   * `scope` — `resolvePolicyDecisionState` re-checks both, so passing this
+   * from anywhere else changes nothing.
+   */
+  sweepAct?: SweepActEligibility;
+  /**
    * P2-4 (#4191): requests the creation-transaction ticket-autonomy decision
    * (`ticketAutonomy.ts`'s `evaluateTicketAutonomy`) — honored ONLY for the
    * `ai_agent` principal, and only alongside `scope: { ticketId }` (one of
@@ -215,6 +226,23 @@ export interface CreateActionIntentInput {
    * an `autonomyDenied` breadcrumb on its `result` column.
    */
   autonomy?: { kind: 'ticket_autonomy' };
+  /**
+   * Tool catalog W01 PR B (#5216): the intent releases through an EXTERNAL
+   * (tenant tool-source, BYO MCP) tool rather than a core one. `toolName`
+   * is then the qualified `<slug>__<name>` the chat session resolved, and
+   * the binding pins the exact `tool_source_tools` row + `revision` the
+   * approver is shown — release revalidation reloads that row and fails
+   * closed on drift/disable (revalidateRelease.ts).
+   *
+   * When set, `checkGuardrails` (the CORE classifier) is NOT consulted: it
+   * would answer tier 4 "unknown tool" for a qualified name. The external
+   * tool is always Tier 3 / `supervised` here (Tier 1-2 external calls
+   * auto-execute in-session and never mint an intent; the caller passes
+   * only Tier-3 descriptors). Chat/MCP principals only: an ai_agent
+   * principal is refused (`external_tool_not_allowed_for_agent`) — agents
+   * calling tenant tools is W5 work (flows-as-tools).
+   */
+  externalTool?: { toolSourceToolId: string; revision: string; sourceName: string };
   /**
    * #5205 W04 (#5209): AI Operator task context. TRUSTED, INTERNAL-ONLY —
    * never accepted from an HTTP body (see `actionIntentTaskContextSchema`'s
@@ -626,6 +654,38 @@ interface CreationResult {
  * anything — an `'unattempted'` intent from a shadow-mode run degrades to
  * `human_required` there, it does not execute unattended.
  */
+/**
+ * #4442 W04 — everything CREATION knows about a sweep-minted proposal's act
+ * eligibility. Assembled by the CALLER from system state (the effective
+ * schedule and the run's own trusted evidence subject);
+ * `resolvePolicyDecisionState` only READS it, so the gate stays pure and
+ * directly unit-testable. Freshness and the live condition re-probe are
+ * decide-time concerns and deliberately not here — see
+ * `policyDecide.ts`'s `attemptPolicyDecision`.
+ */
+export interface SweepActEligibility {
+  /** The EFFECTIVE (partner baseline ∧ org override) act-mode value. */
+  scheduleActMode: boolean;
+  /** The SYSTEM's own subject for the evidence row this proposal cites. */
+  subject: { kind: AiSweepKind; key: string; observedAt: string | null };
+  /** Whether the intent's arguments name exactly that subject. */
+  argumentsMatchSubject: boolean;
+}
+
+/**
+ * @internal Exported ONLY for `policyDecide.sweepFlagOff.test.ts` and
+ * `intentService.sweepAct.test.ts` (#4442 W04). The eight-gate ladder below
+ * decides whether a Tier-3 intent may be authorized without a human, so it
+ * deserves a direct unit surface rather than being reachable only through
+ * `createActionIntent`'s full transaction. Not part of the module's public
+ * API — production callers go through `createActionIntent`.
+ */
+export function __resolvePolicyDecisionStateForTest(
+  args: Parameters<typeof resolvePolicyDecisionState>[0],
+): ActionIntentPolicyDecisionState {
+  return resolvePolicyDecisionState(args);
+}
+
 function resolvePolicyDecisionState(args: {
   guardrail: GuardrailCheck;
   approvalScope: ActionIntentApprovalScope;
@@ -651,6 +711,15 @@ function resolvePolicyDecisionState(args: {
    * from a device-less run. See the `hasScope` branch below.
    */
   hasScope: boolean;
+  /**
+   * #4442 W04: `action_intents.trigger_kind` (W01) for the intent being
+   * created. The sweep-act allowance below keys on THIS, not on "has a
+   * scope" — load-bearing, so a ticket scope, or a scope kind added later,
+   * cannot inherit the allowance by having a scope.
+   */
+  triggerKind?: string | null;
+  /** #4442 W04: system-assembled act eligibility; absent = not act-eligible. */
+  sweepAct?: SweepActEligibility;
 }): ActionIntentPolicyDecisionState {
   void args.toolName;
   void args.input;
@@ -679,7 +748,28 @@ function resolvePolicyDecisionState(args: {
   // is roadmap #4442 (explicitly OUT of P2-5, quorum 2026-09-01), behind
   // its own review, and is expected to REPLACE this line rather than route
   // around it.
-  if (args.hasScope) return 'human_required';
+  // #4442 W04 — the narrow replacement for P2-2's blanket `if (args.hasScope)`.
+  // A scoped intent is decidable ONLY when every one of these holds; anything
+  // unresolved falls through to human_required, like every other branch here.
+  // Keying on trigger_kind and NOT on "has a scope" is load-bearing: a ticket
+  // scope (P2-4), or a scope kind added later, must not inherit this allowance.
+  //
+  // `sweepActEnabled()` is checked FIRST inside the branch, before anything
+  // else on `args` is even read, so the flag-off regression control's "reads
+  // nothing else" assertion holds (policyDecide.sweepFlagOff.test.ts).
+  if (args.hasScope) {
+    if (!sweepActEnabled()) return 'human_required';
+    if (args.triggerKind !== 'sweep_finding') return 'human_required';
+    const act = args.sweepAct;
+    if (!act) return 'human_required';
+    if (!act.scheduleActMode) return 'human_required';
+    if (!act.argumentsMatchSubject) return 'human_required';
+    // Freshness and the live condition re-probe are DECIDE-time, not here —
+    // see attemptPolicyDecision. Creation cannot probe: it runs inside the
+    // intent's own transaction and a probe there would hold a pooled
+    // connection across a second query for every proposal in the occurrence.
+  }
+
   if (!args.agentRun) return 'human_required';
   if (args.approvalScope !== 'supervised') return 'human_required';
   if (args.agentMode !== 'act') return 'human_required';
@@ -1091,16 +1181,56 @@ export async function createActionIntent(
   const scopeDeviceId = input.scope && 'deviceId' in input.scope ? input.scope.deviceId : null;
   const scopeTicketId = input.scope && 'ticketId' in input.scope ? input.scope.ticketId : null;
 
-  const { check: guardrail, context: guardrailContext } = await resolveGuardrailForIntent(
-    input.toolName,
-    input.input,
-    // `input.orgId` is the caller-supplied address; the authoritative
-    // `resolvedOrg` is computed a few lines below, and the guardrail only needs
-    // the org to scope a READ that is re-validated by assertProposalRunnable
-    // and by consumeProposalForIntent inside the transaction.
-    input.orgId ?? auth.orgId ?? null,
-    input.guardrailContext,
-  );
+  // Tool catalog W01 PR B (#5216): an EXTERNAL tool binding replaces the core
+  // classifier with a fixed Tier-3/supervised verdict — see the field's doc
+  // on CreateActionIntentInput. Validated BEFORE any DB access, like `scope`.
+  const externalTool = input.externalTool ?? null;
+  if (externalTool) {
+    if (auth.principal.kind === 'ai_agent') {
+      throw new ActionIntentError(
+        'AI agent principals cannot create intents for external (tool-source) tools',
+        'external_tool_not_allowed_for_agent',
+      );
+    }
+    if (!isTenantToolName(input.toolName)) {
+      throw new ActionIntentError(
+        `externalTool binding requires a qualified <slug>__<name> tool name (got '${input.toolName}')`,
+        'invalid_external_tool',
+      );
+    }
+    // `tool_source_tool_id` is a Postgres uuid column — same 22P02-at-INSERT
+    // reasoning as the `binding` checks below. An empty revision would make
+    // the pairing CHECK pass while pinning nothing; refuse it.
+    if (!CANONICAL_UUID_LOWER.test(externalTool.toolSourceToolId)) {
+      throw new ActionIntentError('externalTool.toolSourceToolId must be a canonical lowercase UUID', 'invalid_external_tool');
+    }
+    if (typeof externalTool.revision !== 'string' || externalTool.revision.length === 0) {
+      throw new ActionIntentError('externalTool.revision must be a non-empty string', 'invalid_external_tool');
+    }
+  }
+
+  const { check: guardrail, context: guardrailContext } = externalTool
+    ? {
+        check: {
+          tier: 3,
+          allowed: true,
+          requiresApproval: true,
+          readOnly: false,
+          approvalScope: 'supervised',
+          description: `${input.toolName} — external tool from ${externalTool.sourceName}`,
+        } satisfies GuardrailCheck,
+        context: undefined,
+      }
+    : await resolveGuardrailForIntent(
+        input.toolName,
+        input.input,
+        // `input.orgId` is the caller-supplied address; the authoritative
+        // `resolvedOrg` is computed a few lines below, and the guardrail only needs
+        // the org to scope a READ that is re-validated by assertProposalRunnable
+        // and by consumeProposalForIntent inside the transaction.
+        input.orgId ?? auth.orgId ?? null,
+        input.guardrailContext,
+      );
   if (!guardrail.allowed || guardrail.tier >= 4) {
     throw new ActionIntentTierError(
       `Tool "${input.toolName}" is not permitted on the action-intent path: ${guardrail.reason ?? 'blocked'}`,
@@ -1436,8 +1566,17 @@ export async function createActionIntent(
     // keys for exactly the same reason a device sweep fan-out does.
     scopeId: scopeDeviceId ?? scopeTicketId ?? null,
   });
-  const targetSummary = buildTargetSummary(input.toolName, input.input);
-  const impactSummary = buildImpactSummary(input.toolName, input.input, guardrail);
+  // External tools have no IMPACT_SUMMARY_BUILDERS entry and no aiTools
+  // definition: the approver reads which source the call goes to and which
+  // argument keys it carries (values are on the card's argument JSON).
+  const targetSummary = externalTool
+    ? `${input.toolName} (external tool from ${externalTool.sourceName})`
+    : buildTargetSummary(input.toolName, input.input);
+  const impactSummary = externalTool
+    ? `Calls ${input.toolName} on ${externalTool.sourceName} with arguments: ${
+        Object.keys(input.input).length > 0 ? Object.keys(input.input).sort().join(', ') : '(none)'
+      }`
+    : buildImpactSummary(input.toolName, input.input, guardrail);
   // What the approver READS. `targetSummary` stays the audit signature.
   const labelReason = input.actionLabel ?? guardrail.description ?? null;
   // #5106 turned "on device 6eae0f70..." into "on <name>" using the SCOPED
@@ -1633,6 +1772,10 @@ export async function createActionIntent(
         input: input.input,
         agentMode: agentRunMode,
         hasScope: input.scope !== undefined,
+        // #4442 W04: the PARSED trigger, i.e. the same value stamped onto
+        // `action_intents.trigger_kind` below — never the raw input.
+        triggerKind: trigger?.kind ?? null,
+        sweepAct: input.sweepAct,
       });
 
       // P2-4 Task A3 (#4191) — the creation-transaction ticket-autonomy
@@ -1762,6 +1905,10 @@ export async function createActionIntent(
           impactSummary,
           reason: input.reason ?? null,
           riskTier: guardrail.tier,
+          // Tool catalog W01 PR B (#5216): both or neither —
+          // `action_intents_external_tool_chk`. Immutable from here on.
+          toolSourceToolId: externalTool?.toolSourceToolId ?? null,
+          toolRevision: externalTool?.revision ?? null,
           idempotencyKey,
           correlationId: randomUUID(),
           approvalScope,
@@ -1883,10 +2030,19 @@ export async function createActionIntent(
           existing.source !== input.source ||
           (!sameTaskReuse
             && (existing.requestingAgentRunId ?? null) !== (agentRun?.id ?? null)) ||
-          existing.argumentDigest !== argumentDigest
+          existing.argumentDigest !== argumentDigest ||
+          // Tool catalog W01 PR B (#5216): the external binding is part of the
+          // request's identity. A tool row deleted and recreated under the
+          // same qualified name (new uuid, or a new revision after
+          // rediscovery) is a DIFFERENT approval target, so reusing the live
+          // intent would hand the caller a binding release revalidation is
+          // going to refuse as `external_tool_disabled`/`_drift` — a confusing
+          // spurious failure instead of an honest conflict here.
+          (existing.toolSourceToolId ?? null) !== (externalTool?.toolSourceToolId ?? null) ||
+          (existing.toolRevision ?? null) !== (externalTool?.revision ?? null)
         ) {
           throw new ActionIntentError(
-            'Idempotency key already belongs to a different live request (action/source/run/arguments mismatch)',
+            'Idempotency key already belongs to a different live request (action/source/run/arguments/external-tool mismatch)',
             'idempotency_conflict',
           );
         }
@@ -2093,13 +2249,20 @@ export async function createActionIntent(
   // `pending_approval` snapshot exactly as it always did; the attempt's
   // outcome surfaces later via the intent's own state, not this call's return
   // value.
-  // `!input.scope` is belt-and-braces, not redundancy with taste: a scoped
-  // intent cannot BE 'unattempted' (resolvePolicyDecisionState forces
-  // human_required for it — spec §4.2 amendment, #4189), so this second
-  // condition only fires if that invariant is ever broken upstream. It is
-  // cheap, and the failure it guards against is a sweep proposal
-  // auto-executing.
-  if (creation.isNew && !input.scope && creation.intent.policyDecisionState === 'unattempted') {
+  // The second, belt-and-braces gate. Before #4442 W04 this was a blanket
+  // `!input.scope`, mirroring the creation gate's blanket refusal of every
+  // scoped intent. W04 narrows BOTH in the same shape: an unscoped intent is
+  // unchanged, and a scoped one is only kicked off when the same act
+  // conditions `resolvePolicyDecisionState` applied still hold here. It is
+  // deliberately not deleted — it is cheap, and the failure it guards against
+  // is a sweep proposal auto-executing.
+  const scopedAttemptAllowed = !input.scope || (
+    sweepActEnabled()
+    && trigger?.kind === 'sweep_finding'
+    && input.sweepAct?.scheduleActMode === true
+    && input.sweepAct.argumentsMatchSubject === true
+  );
+  if (creation.isNew && scopedAttemptAllowed && creation.intent.policyDecisionState === 'unattempted') {
     triggerPolicyDecisionAttempt(creation.intent.id);
   }
 

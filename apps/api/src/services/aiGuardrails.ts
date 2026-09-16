@@ -249,7 +249,15 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // action on real endpoints with no human in the loop:
   //   - software policies: `enforceMode` + `remediationOptions.autoUninstall`
   //     turn a detect-only allowlist into fleet-wide auto-uninstall (the #3381
-  //     mass-uninstall failure mode).
+  //     mass-uninstall failure mode). `remediationOptions.autoInstall` (#5505
+  //     desired-state install) is NOT gated the same way as the fields above —
+  //     it is never accepted from the AI at all. The four handler write sites
+  //     in aiToolsCompliance.ts/aiToolsPolicyPrereqs.ts refuse an
+  //     autoInstall:true outright, regardless of tier or approval, because
+  //     only a human operator holding devices.execute + MFA may arm software
+  //     installation (contract-A D4). Tier-3 approval on this tool remains
+  //     for enforceMode/autoUninstall; it is not the mechanism that protects
+  //     autoInstall.
   //   - update rings: `autoApprove` + `deadlineDays` + `gracePeriodHours` arm
   //     unattended patch installs with FORCED reboots — the standing-rule form
   //     of manage_patches:install, which already requires approval.
@@ -441,6 +449,12 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
  */
 export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   'manage_ai_agents',
+  // Execution plane (spec §5.5). An agent that could launch analysis runs could
+  // launch runs that launch runs; the compute reservation is the only thing
+  // bounding that, and a reservation is not an authority model. A HUMAN asks
+  // for analysis. Denied unconditionally in `checkAgentGuardrails`, above the
+  // allowlist, so it cannot be re-granted by a policy snapshot.
+  'workspace_launch_analysis',
 ]);
 
 export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
@@ -991,6 +1005,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   detect_log_correlations: { resource: 'devices', action: 'read' },
   // Execution plane
   export_dataset: { resource: 'devices', action: 'read' },
+  // Starting an autonomous run is an ai_agents WRITE even though the tool is
+  // Tier 1: it spends the org's compute budget and its credits.
+  workspace_launch_analysis: { resource: 'ai_agents', action: 'write' },
   // Configuration policy tools
   list_configuration_policies: { resource: 'policies', action: 'read' },
   get_configuration_policy: { resource: 'policies', action: 'read' },
@@ -1306,6 +1323,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Network (mirror backing REST routes: networkChanges.ts uses devices:read + alerts:acknowledge;
   // networkBaselines.ts uses devices:write)
   get_network_changes: { resource: 'devices', action: 'read' },
+  get_network_asset_reachability: { resource: 'devices', action: 'read' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };

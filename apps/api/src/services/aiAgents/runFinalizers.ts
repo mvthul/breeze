@@ -34,6 +34,7 @@ import { persistPatchPlan } from './patchPlan';
 import { isPatchProfile } from './patchProfile';
 import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
 import { resolveRecipientUserIds } from './recipients';
+import { indexEvidenceSubjects, type SweepEvidenceSubject } from './sweepEvidence';
 import { persistSweepFindings } from './sweepFindings';
 import { isSweepProfile } from './sweepProfile';
 import { persistTicketTriage } from './ticketTriageFindings';
@@ -188,6 +189,13 @@ export async function finalizeSweep(ctx: RunContext, result: LoopResult): Promis
       if (row.deviceId) evidenceDeviceIds.add(row.deviceId);
     }
   }
+  // #4442 W04 — the same rows, indexed by the SYSTEM's own subject
+  // (`kind|deviceId|key`). A run with no sweep block has an EMPTY index, which
+  // refuses every proposal at gate 1b — fail closed, exactly like the device
+  // set above.
+  const evidenceSubjects = ctx.sweep
+    ? indexEvidenceSubjects(ctx.sweep.evidence)
+    : new Map<string, SweepEvidenceSubject>();
 
   try {
     const { proposals, intentIds } = await persistSweepFindings(
@@ -209,6 +217,21 @@ export async function finalizeSweep(ctx: RunContext, result: LoopResult): Promis
           ctx.run.policySnapshot.effective.limits.maxActionsPerRun
           ?? AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun,
         evidenceDeviceIds,
+        evidenceSubjects,
+        // #4442 W05 — the three caps the readiness cohort walks against. The
+        // first two mirror what `runAuthorizeTransaction` enforces per intent;
+        // the cohort only bounds over-subscription across the occurrence. `??`
+        // tolerates a pre-v13 in-flight policy snapshot, which predates the
+        // per-occurrence device cap entirely.
+        maxFleetPercentPerDay:
+          ctx.run.policySnapshot.effective.limits.maxFleetPercentPerDay
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxFleetPercentPerDay,
+        maxPolicyDecisionsPerDay:
+          ctx.run.policySnapshot.effective.limits.maxPolicyDecisionsPerDay
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxPolicyDecisionsPerDay,
+        maxUnattendedDevicesPerSweep:
+          ctx.run.policySnapshot.effective.limits.maxUnattendedDevicesPerSweep
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxUnattendedDevicesPerSweep,
       },
       outcome.sweepFindings,
       result.agentAuth,

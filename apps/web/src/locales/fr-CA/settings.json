@@ -211,7 +211,8 @@
       "actionPlan": "Plan d’action",
       "autoApprove": "Approbation automatique",
       "hybridPlan": "Plan hybride"
-    }
+    },
+    "overridesOrgTab": "Les champs que vous définissez ici remplacent et verrouillent le même champ dans l’onglet IA de chaque organisation."
   },
   "aiBudgetThresholds": {
     "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
@@ -896,7 +897,10 @@
     },
     "customCss": {
       "title": "Personnalisé CSS (avancé)",
-      "description": "Utilisez des styles personnalisés pour affiner l’espacement, la typographie ou la mise en page."
+      "description": "Utilisez des styles personnalisés pour affiner l’espacement, la typographie ou la mise en page.",
+      "saveError": "Échec de l’enregistrement du CSS personnalisé.",
+      "loadError": "Impossible de charger le CSS personnalisé actuellement enregistré. La modification est désactivée tant qu’il n’est pas chargé.",
+      "saveBlockedByLoadError": "Le CSS personnalisé n’a pas été enregistré : la valeur actuelle n’a pas pu être vérifiée. Rechargez la page et réessayez."
     },
     "preview": {
       "action": "Prévisualiser",
@@ -1441,7 +1445,7 @@
     "completeReview": "Revue complète"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "Utilisation et budget de l’IA",
+    "aIUsageBudget": "Utilisation de l’IA",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Surveillez l’utilisation de l’assistant IA et configurez les limites budgétaires",
     "budgetConfiguration": "Configuration du budget",
     "aIEnabled": "IA activée",
@@ -1491,7 +1495,19 @@
     "untitled": "Sans titre",
     "billedToPartnerKey": "Facturé sur votre clé — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
     "billedToPartnerKeyViaEndpoint": "Facturé sur votre clé via {{name}}: l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
-    "creditsRemaining": "Crédits IA Breeze restants"
+    "creditsRemaining": "Crédits IA Breeze restants",
+    "defaultValue": "Par défaut ({{value}})",
+    "viewPartnerWideBudgets": "Budgets IA du partenaire",
+    "monitorAIAssistantUsage": "Surveiller l’utilisation de l’assistant IA",
+    "effectiveBudget": "Budget en vigueur",
+    "effectiveBudgetHelp": "Les limites actuellement en vigueur pour cette organisation, et l’endroit où chacune a été définie.",
+    "effectiveBudgetUnavailable": "Le budget effectif n’a pas pu être chargé. Rechargez la page pour réessayer.",
+    "sourcePartner": "Défini par le partenaire",
+    "sourceOrganization": "Défini par l’organisation",
+    "sourceDefault": "Par défaut",
+    "selectOrgForEffectiveBudget": "Sélectionnez une organisation pour voir son budget en vigueur, ou modifiez les valeurs par défaut à l’échelle du partenaire.",
+    "editPartnerWideDefaults": "Modifier les valeurs par défaut à l’échelle du partenaire",
+    "thresholdsOff": "Désactivé"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1525,6 +1541,14 @@
       "dailyOrRarerHint": "Un plan de correctifs se déclenche au plus une fois par jour : une minute et une heure littérales, et * ou une liste littérale pour le jour-du-mois, le mois et le jour de la semaine. Par exemple, 0 2 * * * s'exécute chaque nuit à 2 h.",
       "kindsRequired": "Sélectionnez au moins un contrôle.",
       "enabled": "Activé",
+      "actMode": {
+        "label": "Mode d'action",
+        "hint": "Une fois activé, ce planning peut appliquer certains correctifs automatiquement au lieu d'attendre une approbation.",
+        "disabledHint": "L'activation du mode d'action nécessite un accès partenaire complet à toutes les organisations.",
+        "scopeNote": "Les correctifs non supervisés se limitent au redémarrage d'un service arrêté, uniquement sur les appareils dont l'organisation dispose déjà de l'autorisation manage_services:restart. Tout le reste continue d'attendre une approbation.",
+        "disableForOrg": "Désactiver le mode d'action pour cette organisation",
+        "disableForOrgHint": "Cette organisation hérite toujours du réglage du mode d'action de la référence partenaire, sauf désactivation ici — elle ne peut jamais l'activer de façon indépendante."
+      },
       "override": "Déroger pour cette organisation",
       "editOverride": "Modifier la dérogation de cette organisation",
       "overrideHint": "La dérogation de cette organisation à la référence du partenaire. Elle suit toujours la cadence de la référence.",
@@ -1543,7 +1567,8 @@
         "pending_reboots": "Redémarrages en attente",
         "failed_backups": "Sauvegardes en échec",
         "service_down": "Service arrêté",
-        "unpatched_critical": "Vulnérabilités critiques non corrigées"
+        "unpatched_critical": "Vulnérabilités critiques non corrigées",
+        "expiring_certs": "Certificats qui expirent"
       },
       "toasts": {
         "saved": "Horaire enregistré",
@@ -1565,7 +1590,8 @@
         "agentKindNotDesigner": "Une planification de conception du parc doit cibler un agent Concepteur du parc.",
         "agentKindNotPatch": "Une planification de plan de correctifs doit cibler un agent Correctifs.",
         "kindsNotEmpty": "Une planification de rapport hebdomadaire n'exécute aucun contrôle. Retirez les contrôles sélectionnés avant d'enregistrer.",
-        "invalidCronForKind": "Un rapport hebdomadaire doit se déclencher exactement une fois par semaine. Utilisez une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine."
+        "invalidCronForKind": "Un rapport hebdomadaire doit se déclencher exactement une fois par semaine. Utilisez une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine.",
+        "actModeOrgCannotArm": "Le mode d'action est activé sur la référence partenaire ; une dérogation d'organisation ne peut que le désactiver, jamais l'activer."
       }
     },
     "title": "Agents IA",
@@ -1776,6 +1802,9 @@
       "supervisedActionKeysFailed": "Impossible de charger la liste des actions décidables par politique ; l’autorisation sans surveillance ne peut pas être modifiée pour le moment.",
       "ticketAutonomousWrites": "Écritures autonomes de tickets",
       "ticketAutonomousWritesHint": "Dérogation d'organisation seulement — les écritures autonomes de tickets nécessitent le mode action et cette activation au niveau de l'organisation",
+      "alertCategories": "Catégories d'alertes",
+      "alertCategoriesHint": "Seules les alertes dont la catégorie de modèle est listée ici réveillent cet agent. Laisser vide pour toute catégorie. Les alertes de correctifs portent « patching ».",
+      "alertCategoriesPlaceholder": "p. ex. patching, monitor",
       "enabledHint": "« Activé » et le mode sont deux interrupteurs distincts et une exécution a besoin des deux : si ceci est désactivé, rien ne s’exécute quel que soit le mode, et en mode Désactivé rien ne s’exécute même si ceci est activé.",
       "enabledCreateHint": "Les nouveaux agents sont créés éteints. Vérifiez la liste des outils autorisés et les limites ci-dessous, puis activez ceci lorsque vous voulez que l’agent commence à s’exécuter.",
       "actKeysCleared": "Les autorisations du mode action sont conservées, mais ne seront pas enregistrées tant que cet agent ne repasse pas en mode Action.",
@@ -1863,6 +1892,20 @@
         "empty": "Aucun constat signalé.",
         "evidenceTruncated": "Les éléments ont été tronqués : toutes les lignes correspondantes n’ont pas été présentées à l’agent.",
         "proposalCreated": "Approbation demandée",
+        "actSummary": "Action sans supervision sur {{acted}} appareils sur {{proposed}} — les autres attendent une approbation.",
+        "outcomes": {
+          "auto_executing": "Exécution sans supervision",
+          "executed": "Terminé",
+          "failed": "Échec",
+          "declined": "Refusé",
+          "expired": "Expiré",
+          "unknown": "Résultat inconnu"
+        },
+        "stoppedBy": {
+          "fleet_cap": "limite quotidienne du parc atteinte",
+          "day_cap": "limite quotidienne d’actions atteinte",
+          "occurrence_cap": "plafond d’appareils par balayage atteint"
+        },
         "columns": {
           "kind": "Vérification",
           "severity": "Gravité",
@@ -1877,7 +1920,8 @@
           "pending_reboots": "Redémarrages en attente",
           "failed_backups": "Sauvegardes en échec",
           "service_down": "Service arrêté",
-          "unpatched_critical": "Vulnérabilités critiques non corrigées"
+          "unpatched_critical": "Vulnérabilités critiques non corrigées",
+          "expiring_certs": "Certificats bientôt expirés"
         },
         "severities": {
           "critical": "Critique",
@@ -1888,6 +1932,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Appareil absent des éléments du balayage",
+          "subject_not_in_evidence": "Élément absent des éléments du balayage",
           "device_not_in_org": "Appareil absent de cette organisation",
           "not_allowlisted": "Outil non autorisé pour cet agent",
           "no_eligible_approvers": "Aucun approbateur éligible",
@@ -1917,6 +1962,8 @@
         "failureClass": "Classe d'échec : {{label}}",
         "attempts": "{{count}} tentative échouée",
         "attempts_other": "{{count}} tentatives échouées",
+        "rebootWindow": "Fenêtre : {{start}} – {{end}}",
+        "redundancyGroup": "Groupe de redondance : {{group}}",
         "escalation": "Nécessite une intervention humaine – aucune nouvelle tentative automatique.",
         "escalations": "{{count}} escalade",
         "escalations_other": "{{count}} escalades",
@@ -1946,7 +1993,10 @@
           "class_not_retryable": "Ce type d'échec n'est jamais retenté automatiquement",
           "chase_attempts_exhausted": "La limite de nouvelles tentatives pour cette mise à jour est atteinte – escaladé à la place",
           "attempt_count_mismatch": "Le nombre de tentatives cité ne correspond pas aux éléments de preuve",
-          "failure_history_truncated": "L'historique des échecs était incomplet : le nombre de tentatives n'était pas fiable"
+          "failure_history_truncated": "L'historique des échecs était incomplet : le nombre de tentatives n'était pas fiable",
+          "reboot_policy_not_window_gated": "La politique de redémarrage de l'appareil redémarre en dehors des fenêtres de maintenance, un plan de fenêtre ne serait donc pas respecté",
+          "redundancy_unknown": "Le groupe de redondance de l'appareil est inconnu, l'ordre n'a donc pas pu être vérifié",
+          "redundancy_collision": "Un autre appareil du même groupe de redondance est déjà planifié pour cette fenêtre"
         },
         "ineligible": {
           "not_outstanding": "Non en attente sur cet appareil",
@@ -2026,7 +2076,9 @@
           "startedAt": "Démarré",
           "finishedAt": "Terminé",
           "turnCount": "Tours",
-          "summary": "Résumé"
+          "summary": "Résumé",
+          "computeCost": "Calcul",
+          "computeEstimated": "(estimé)"
         },
         "flags": {
           "budgetExceeded": "Budget dépassé",
@@ -2058,6 +2110,29 @@
             "skipped": "Vérification ignorée"
           },
           "viewApproval": "Consulter dans Approbations"
+        },
+        "artifacts": {
+          "title": "Fichiers produits par cette exécution",
+          "download": "Télécharger",
+          "preview": "Aperçu",
+          "attachToTicket": "Joindre à un billet",
+          "attach": "Joindre {{name}}",
+          "ticketIdPlaceholder": "ID du billet",
+          "attachedToTicket": "Joint au billet",
+          "attachFailed": "Impossible de joindre le fichier à ce billet"
+        },
+        "workspace": {
+          "title": "Ce qui s’est exécuté dans le bac à sable",
+          "region": "Région",
+          "status": "Bac à sable",
+          "cpu": "Temps CPU",
+          "steps": "Étapes",
+          "script": "Script",
+          "stdout": "Sortie",
+          "exitCode": "sortie",
+          "timedOut": "délai dépassé",
+          "noExitCode": "aucun code de sortie",
+          "artifactExpired": "expiré"
         },
         "progress": {
           "title": "Progression"
@@ -2162,6 +2237,7 @@
       "emptyState": {
         "title": "Aucun résultat d’IA pour cette période",
         "description": "Les résultats apparaîtront ici dès que vos agents IA évalueront une alerte, trieront un ticket ou appliqueront un correctif en mode observation ou action. Élargissez la période de rapport ci-dessus, ou configurez un agent pour commencer.",
+        "descriptionWidestWindow": "Les résultats apparaîtront ici dès que vos agents IA évalueront une alerte, trieront un ticket ou appliqueront un correctif en mode observation ou action. Il n’y a pas encore assez de données, même pour la période de rapport la plus longue — configurez un agent pour commencer.",
         "action": "Configurer un agent"
       },
       "tileGroups": {
@@ -2349,7 +2425,8 @@
         "below_threshold": "Il n’y a pas encore assez d’exécutions vérifiées.",
         "too_recent": "La première exécution vérifiée est encore trop récente.",
         "has_failures": "Un échec ou une récurrence a été consigné durant cette période.",
-        "not_policy_decidable": "Cette opération ne peut jamais être préautorisée."
+        "not_policy_decidable": "Cette opération ne peut jamais être préautorisée.",
+        "below_sweep_threshold": "Il faut plus de correctifs vérifiés pour lesquels un balayage planifié a choisi la cible."
       },
       "confirm": {
         "title": "Demander une préautorisation",
@@ -4267,6 +4344,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Budget IA",
+    "description": "Plafonds de dépenses, limites de fréquence et mode d’approbation de l’assistant IA dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l’onglet du partenaire.",
+    "selectOrganization": "Sélectionnez une organisation pour configurer son budget IA."
+  },
   "orgSettingsPage": {
     "loading": "Chargement des paramètres d’organisation...",
     "confirmDiscard": "Vous avez des modifications non enregistrées dans cette section. Changer les éliminera. Continuer ?",
@@ -4320,7 +4402,9 @@
       "notifications": "Notifications",
       "notificationsDescription": "Courriel, Slack, webhooks",
       "ticketing": "Billetterie",
-      "ticketingDescription": "SLA et les dérogations de facturation"
+      "ticketingDescription": "SLA et les dérogations de facturation",
+      "ai": "IA",
+      "aiDescription": "Budget de l’assistant IA, limites de fréquence et mode d’approbation"
     },
     "overview": {
       "title": "Aperçu de l’organisation",
@@ -4341,6 +4425,12 @@
       "organizationId": "Organisation ID",
       "copyOrganizationId": "Copier l’ID de l’organisation",
       "organizationIdHelp": "Utilisez ce ID lors d’une invitation ou d’une configuration d’intégrations."
+    },
+    "ai": {
+      "externalProcessing": "Autoriser l’analyse IA en bac à sable",
+      "externalProcessingDescription": "Permet aux exécutions d’analyse IA d’exécuter du code pour cette organisation dans un bac à sable isolé, sans accès réseau, hébergé dans la région de cette organisation. Désactivé par défaut.",
+      "externalProcessingSaved": "Enregistré",
+      "externalProcessingSaveFailed": "Impossible de modifier ce paramètre"
     },
     "breadcrumbs": {
       "settings": "Paramètres",
@@ -5185,6 +5275,16 @@
     "empty": {
       "title": "Aucune variable pour l'instant",
       "description": "Créez-en une pour ne plus coller le même jeton dans les scripts de chaque client."
+    },
+    "filters": {
+      "searchLabel": "Rechercher des variables",
+      "searchPlaceholder": "Rechercher par clé ou description",
+      "scopeGroupLabel": "Filtrer par portée",
+      "scopeAll": "Toutes les portées"
+    },
+    "noMatches": {
+      "title": "Aucune variable ne correspond à vos filtres",
+      "description": "Essayez un autre terme de recherche ou effacez le filtre de portée."
     },
     "errors": {
       "load": "Impossible de charger les variables."

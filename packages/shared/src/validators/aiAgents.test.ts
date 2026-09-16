@@ -142,8 +142,26 @@ describe('aiAgents validators', () => {
     expect(aiAgentLimitsSchema.safeParse({ promoteThreshold: 201 }).success).toBe(false);
   });
 
-  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 12 (execution plane W04 bump)', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(12);
+  it('maxUnattendedDevicesPerSweep defaults to 3 and clamps to [1,50] (#4442 W05)', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxUnattendedDevicesPerSweep).toBe(3);
+    expect(aiAgentLimitsSchema.parse({}).maxUnattendedDevicesPerSweep).toBe(3);
+    expect(aiAgentLimitsSchema.safeParse({ maxUnattendedDevicesPerSweep: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxUnattendedDevicesPerSweep: 1 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxUnattendedDevicesPerSweep: 50 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxUnattendedDevicesPerSweep: 51 }).success).toBe(false);
+  });
+
+  it('sweepPromoteThreshold defaults to 10 and clamps to [1,200] (#4442 W05)', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold).toBe(10);
+    expect(aiAgentLimitsSchema.parse({}).sweepPromoteThreshold).toBe(10);
+    expect(aiAgentLimitsSchema.safeParse({ sweepPromoteThreshold: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ sweepPromoteThreshold: 1 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ sweepPromoteThreshold: 200 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ sweepPromoteThreshold: 201 }).success).toBe(false);
+  });
+
+  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 13 (sweep act-limits bump, #4442 W05)', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(13);
   });
 
   it('rejects instructions over 2000 chars and unknown allowlist shapes', () => {
@@ -215,6 +233,30 @@ describe('aiAgents validators', () => {
     it('rejects a priority value outside the ticket_priority enum', () => {
       const result = aiAgentPolicyFieldsSchema.safeParse({ triggers: { ticketPriorities: ['critical'] } });
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe('triggers.alertCategories (AI patch agent W04, #5750)', () => {
+    it('is absent (unrestricted) by default — never an empty allowlist', () => {
+      const created = createAiAgentSchema.parse({ kind: 'patch', name: 'Patch' });
+      expect(created.triggers.alertCategories).toBeUndefined();
+    });
+
+    it('accepts a narrowing list of alert template categories', () => {
+      const parsed = aiAgentPolicyFieldsSchema.parse({ triggers: { alertCategories: ['patching'] } });
+      expect(parsed.triggers.alertCategories).toEqual(['patching']);
+    });
+
+    it('rejects the empty array — [] would read as "matches nothing"', () => {
+      expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { alertCategories: [] } }).success).toBe(false);
+    });
+
+    it('an UPDATE may send null to clear the filter back to unrestricted; create may not', () => {
+      // The PATCH merge is shallow ({ ...stored, ...input }), so an absent key
+      // keeps the stored list. `null` is the one representable "clear" —
+      // agentService drops the key when it sees it.
+      expect(updateAiAgentSchema.parse({ triggers: { alertCategories: null } })).toEqual({ triggers: { alertCategories: null } });
+      expect(createAiAgentSchema.safeParse({ kind: 'patch', name: 'Patch', triggers: { alertCategories: null } }).success).toBe(false);
     });
   });
 
@@ -426,7 +468,7 @@ describe('limits v6', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour).toBe(20);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepBudgetCentsPerRun).toBe(30);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepMaxTurns).toBe(8);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(12);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(13);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentSweepRuns: 11 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxSweepRunsPerHour: 201 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, sweepBudgetCentsPerRun: 4 }).success).toBe(false);
@@ -440,7 +482,7 @@ describe('limits v7', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour).toBe(5);
     expect(AI_AGENT_LIMIT_DEFAULTS.narrativeBudgetCentsPerRun).toBe(20);
     expect(AI_AGENT_LIMIT_DEFAULTS.narrativeMaxTurns).toBe(3);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(12);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(13);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentNarrativeRuns: 6 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxNarrativeRunsPerHour: 51 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, narrativeBudgetCentsPerRun: 4 }).success).toBe(false);
@@ -458,7 +500,7 @@ describe('limits v8', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour).toBe(30);
     expect(AI_AGENT_LIMIT_DEFAULTS.triageBudgetCentsPerRun).toBe(10);
     expect(AI_AGENT_LIMIT_DEFAULTS.triageMaxTurns).toBe(6);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(12);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(13);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentTriageRuns: 11 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxTriageRunsPerHour: 201 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, triageBudgetCentsPerRun: 51 }).success).toBe(false);
@@ -483,7 +525,7 @@ describe('designer kind', () => {
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxDesignRunsPerDay: 25 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, designBudgetCentsPerRun: 24 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse(AI_AGENT_LIMIT_DEFAULTS).success).toBe(true);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(12);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(13);
   });
 });
 

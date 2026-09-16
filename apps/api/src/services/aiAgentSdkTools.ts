@@ -53,6 +53,14 @@ import {
   googleResetTwoSvHandler, googleAddMailDelegateHandler, googleRemoveMailDelegateHandler,
   googleListLicensesHandler, googleAssignLicenseHandler, googleRemoveLicenseHandler,
 } from './aiToolsGoogle';
+// Execution plane (spec §5.5) — session-only, dispatched through
+// makeSessionAwareHandler like the M365/Google helpdesk handlers above.
+import { workspaceLaunchAnalysisHandler } from './workspace/workspaceLaunchTool';
+import {
+  WORKSPACE_LAUNCH_MAX_GOAL_CHARS,
+  WORKSPACE_LAUNCH_MAX_INPUT_DEVICES,
+  WORKSPACE_LAUNCH_MAX_INPUT_HANDLES,
+} from './workspace/workspaceLaunchLimits';
 import {
   sealToolSecrets,
   isSecretBearingTool,
@@ -278,6 +286,12 @@ export const TOOL_TIERS = {
   query_monitors: 1,
   manage_monitors: 1,           // Action-level escalation in guardrails
   get_service_monitoring_status: 1,
+  // W01 (spec §4.4) — read-only reachability for a discovered network asset,
+  // with the source and age of the evidence. Wired here rather than added to
+  // KNOWN_MISSING_TOOL_TIERS: without a tier, createSessionPreToolUse rejects
+  // it as "Unknown tool" and the chat tells the user the capability does not
+  // exist.
+  get_network_asset_reachability: 1,
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
   // get_monitor / manage_monitor_definitions remain in the frozen
   // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
@@ -357,6 +371,10 @@ export const TOOL_TIERS = {
   google_list_licenses: 1,
   google_assign_license: 3,
   google_remove_license: 3,
+  // Execution plane (spec §5.5). Tier 1: it queues work, it touches nothing.
+  // Absent here, a tool is invisible to chat and to every run profile even
+  // though it is registered in `aiTools`.
+  workspace_launch_analysis: 1,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -1861,12 +1879,15 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_patches',
-      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies.',
+      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies. approve/decline/defer accept patchId or patchName (a title/KB lookup, for when the UUID is unknown), plus an optional ringId to scope to one update ring; decline also accepts allRings to revoke the approval in every ring at once, not just the current/blanket scope.',
       {
         action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval']),
         patchId: uuid.optional(),
+        patchName: z.string().min(1).max(300).optional(),
         patchIds: z.array(uuid).max(50).optional(),
         deviceIds: z.array(uuid).max(50).optional(),
+        ringId: uuid.optional(),
+        allRings: z.boolean().optional(),
         source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
         severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
         status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),
@@ -2475,6 +2496,19 @@ export function createBreezeMcpServer(
       makeHandler('query_monitors', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // W01 (spec §4.4) — the only read that answers "is this printer/switch up"
+    // with the SOURCE and AGE of the evidence. Declared here as well as in
+    // TOOL_TIERS: a tier without a tool() declaration is allowlisted but
+    // uncallable (#2605).
+    tool(
+      'get_network_asset_reachability',
+      'Report whether a discovered network asset (printer, switch, AP, camera, NAS) is currently reachable, with the SOURCE of the evidence and how old it is. Always state the source and age when answering — "responding via SNMP 2 minutes ago", never a bare "online". A state of "unverified" means nothing has checked the device recently; report it as unverified, not as down.',
+      {
+        asset_id: uuid,
+      },
+      makeHandler('get_network_asset_reachability', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     tool(
       'manage_monitors',
       'Get monitor details with recent check history, or create/update/delete network monitors.',
@@ -3053,6 +3087,27 @@ export function createBreezeMcpServer(
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+
+    // Execution plane (spec §5.5): start a sandboxed `analysis` run from chat.
+    // Session-aware, not `makeHandler`: the handler is called as
+    // `(args, auth, session.breezeSessionId)` and the factory refuses with
+    // `no_active_session` BEFORE any enforcement when there is no live chat
+    // session — so no run is ever admitted without one to deliver it to.
+    // Declared here, inside createBreezeMcpServer, because `getActiveSession`
+    // is its parameter: a factory that was never handed it compiles happily and
+    // then answers `no_active_session` to every call.
+    tool(
+      'workspace_launch_analysis',
+      'Start a sandboxed analysis run that computes over fleet data and returns findings plus '
+        + 'downloadable files. Returns a run id immediately; the result arrives later in this conversation.',
+      {
+        goal: z.string().min(1).max(WORKSPACE_LAUNCH_MAX_GOAL_CHARS),
+        deviceIds: z.array(uuid).max(WORKSPACE_LAUNCH_MAX_INPUT_DEVICES).optional(),
+        siteId: uuid.optional(),
+        inputHandles: z.array(uuid).max(WORKSPACE_LAUNCH_MAX_INPUT_HANDLES).optional(),
+      },
+      makeSessionAwareHandler('workspace_launch_analysis', getAuth, getActiveSession, workspaceLaunchAnalysisHandler, onPreToolUse, onPostToolUse),
+    ),
   ];
 
   // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are

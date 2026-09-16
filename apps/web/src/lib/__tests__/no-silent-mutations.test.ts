@@ -43,6 +43,21 @@ const TARGET_GLOBS = [
   'src/components/settings/PartnerSettingsPage.tsx',
   'src/components/settings/PartnerAiProviderTab.tsx',
   'src/components/settings/OrgSettingsPage.tsx',
+  // Tool catalog W01 PR C (#5216): the Tool Sources surface authors the
+  // credentials and risk tiers that decide what the assistant may call on a
+  // customer's systems — a silent failure here is a tech believing a tool is
+  // disabled when it is not. The API client is listed alongside the two
+  // components because it is where the mutating fetches live.
+  'src/components/toolSources/api.ts',
+  'src/components/toolSources/ToolSourceForm.tsx',
+  'src/components/toolSources/DiscoveredToolsTable.tsx',
+  'src/components/toolSources/ToolSourceDetail.tsx',
+  'src/components/toolSources/ToolTestDrawer.tsx',
+  // Execution plane W05 (#5716) — the per-org AI external-processing consent
+  // switch and the attach-artifact-to-ticket control. Both mutate through
+  // runAction; the count assertion below was bumped by exactly these two.
+  'src/components/settings/OrgAiProcessingToggle.tsx',
+  'src/components/aiAgents/AttachArtifactToTicket.tsx',
   // Account board (W02): org create and restore go through runAction in the
   // page; the drag/arrow-key reorder PATCH lives in its own hook. Both are
   // listed because TARGET_GLOBS is a literal file list, not directory-wide.
@@ -297,6 +312,13 @@ const TARGET_GLOBS = [
   // believing responses resumed and the recurrence counter cleared when they
   // did not.
   'src/components/monitoring/MonitorActivityTab.tsx',
+  // Network device page truth W04 (#5992): single writer for asset-scoped mutations.
+  'src/components/devices/networkDevice/settings/useNetworkAssetMutations.ts',
+  // Monitor editor + deploy dialog (sweep G1-4): save/delete already routed
+  // through runAction, but attach/detach were bare fetchWithAuth calls — a
+  // failed detach was silent and a successful one gave no feedback.
+  'src/components/monitoring/MonitorEditor.tsx',
+  'src/components/monitoring/DeployMonitorDialog.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -630,7 +652,12 @@ describe('no silent mutations in targeted set', () => {
     // the count is now 132. Agreements W03 (#5825) moves three contracts files
     // into components/agreements/ and DELETES ContractDocumentsSection.tsx
     // (contract detail embeds the shared list instead), so the count is 131.
-    expect(absoluteFiles.length).toBe(131);
+    // Execution plane W05 (#5716) adds two adopters (AiRunCard attach-to-ticket
+    // and the per-org external-processing switch), so the count is 133.
+    // Tool catalog W01 PR C (#5216) took the count to 138; sweep G1-4 added
+    // MonitorEditor.tsx and DeployMonitorDialog.tsx (140); network device page
+    // truth W04 (#5992) adds the network asset single writer: 140 → 141.
+    expect(absoluteFiles.length).toBe(141);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

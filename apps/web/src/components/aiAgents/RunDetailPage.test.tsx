@@ -2500,4 +2500,178 @@ describe('RunDetailPage — patch plan', () => {
       expect(el.textContent, reason).toMatch(/Not recorded: \S/);
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // W04 (#5750), Task 6 — reboot_plan items carry the resolved window and
+  // redundancy group the evidence attached to them.
+  // ---------------------------------------------------------------------------
+  it('renders a reboot plan item with its window and redundancy group', async () => {
+    const items = [
+      {
+        ...PATCH.items[1],
+        index: 0,
+        disposition: 'recorded' as const,
+        reason: null,
+        windowId: 'mw-1@2026-09-20T02:00:00.000Z',
+        windowStartsAt: '2026-09-20T02:00:00.000Z',
+        windowEndsAt: '2026-09-20T04:00:00.000Z',
+        redundancyGroup: 'domain-controller',
+      },
+    ];
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: { ...PATCH, items, recordedCount: 1, refusedCount: 0 } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    const windowLine = screen.getByTestId('ai-agent-run-patch-item-0-window');
+    expect(windowLine).toHaveTextContent('Window:');
+    const redundancyLine = screen.getByTestId('ai-agent-run-patch-item-0-redundancy');
+    expect(redundancyLine).toHaveTextContent('domain-controller');
+  });
+
+  it('renders nothing for the window/redundancy lines when the item carries neither', async () => {
+    const items = [{ ...PATCH.items[1], index: 0, disposition: 'recorded' as const, reason: null }];
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: { ...PATCH, items, recordedCount: 1, refusedCount: 0 } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-window')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-redundancy')).toBeNull();
+  });
+
+  it('renders each reboot refusal reason as real copy', async () => {
+    const REBOOT_REASONS = ['reboot_policy_not_window_gated', 'redundancy_unknown', 'redundancy_collision'] as const;
+    const COPY: Record<(typeof REBOOT_REASONS)[number], string> = {
+      reboot_policy_not_window_gated:
+        "The device's reboot policy reboots outside maintenance windows, so a window plan would not be honoured",
+      redundancy_unknown: "The device's redundancy group is unknown, so ordering could not be checked",
+      redundancy_collision: 'Another device in the same redundancy group is already planned for this window',
+    };
+    const items = REBOOT_REASONS.map((reason, index) => ({
+      ...PATCH.items[1],
+      index,
+      disposition: 'refused' as const,
+      reason,
+    }));
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: { ...PATCH, items, recordedCount: 0, refusedCount: items.length } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    for (const [index, reason] of REBOOT_REASONS.entries()) {
+      const el = screen.getByTestId(`ai-agent-run-patch-item-${index}-reason`);
+      expect(el.textContent, reason).toContain(COPY[reason]);
+    }
+  });
+});
+
+// #4442 W05 — act-mode outcomes on the run detail. Before this wave every
+// created proposal rendered the same "Approval requested" link to /approvals;
+// act mode makes the interesting outcomes non-pending, so a proposal that ran
+// unattended must say so rather than sending the operator to an empty inbox.
+describe('RunDetailPage — sweep act outcomes (#4442 W05)', () => {
+  const ACT_SWEEP = {
+    ...SWEEP,
+    actSummary: { devicesActed: 1, devicesProposed: 2, stoppedBy: 'occurrence_cap' },
+    findings: [
+      {
+        ...SWEEP.findings[0],
+        proposal: {
+          ...SWEEP.findings[0].proposal,
+          outcome: 'auto_executing',
+          cohort: true,
+          stoppedBy: 'occurrence_cap',
+        },
+      },
+      {
+        ...SWEEP.findings[0],
+        deviceId: 'd9',
+        deviceHostname: 'WKS-09',
+        title: 'W32Time is stopped',
+        proposal: {
+          ...SWEEP.findings[0].proposal,
+          intentId: 'intent-10',
+          outcome: 'pending',
+          cohort: false,
+          stoppedBy: 'occurrence_cap',
+        },
+      },
+    ],
+  };
+
+  it('an auto-executed proposal renders the outcome, not a generic /approvals link', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: ACT_SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    const cell = screen.getByTestId('ai-agent-run-sweep-finding-0-proposal');
+    expect(cell).toHaveTextContent('Running unattended');
+    expect(screen.queryByTestId('ai-agent-run-sweep-proposal-link-0')).not.toBeInTheDocument();
+  });
+
+  it('a proposal outside the canary cohort renders "waiting for approval" and names the cap that stopped it', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: ACT_SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-1')).toBeInTheDocument());
+    // Still a link to the approvals inbox — it IS waiting for a human.
+    expect(screen.getByTestId('ai-agent-run-sweep-proposal-link-1')).toBeInTheDocument();
+    const cell = screen.getByTestId('ai-agent-run-sweep-finding-1-proposal');
+    expect(cell).toHaveTextContent('per-sweep device cap');
+  });
+
+  it('shows the per-device act roll-up above the findings', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: ACT_SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    const rollup = await screen.findByTestId('ai-agent-run-sweep-act-summary');
+    expect(rollup).toHaveTextContent('1');
+    expect(rollup).toHaveTextContent('2');
+  });
+
+  it('a pre-act-mode run (no actSummary, no cohort field) still renders exactly as before', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-sweep-act-summary')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-run-sweep-proposal-link-0')).toBeInTheDocument();
+  });
+
+  it('an UNRECOGNISED outcome renders "outcome unknown", never the approvals link', async () => {
+    // Review fix: an outcome this build has never heard of (API/web deploy
+    // skew, or a new intent status) must not fall through to the approvals
+    // link — that link is an instruction, and telling an operator to approve
+    // something that may already have auto-executed is worse than saying
+    // nothing. Same convention as the narrative-delivery `unknown` bucket.
+    const skewed = {
+      ...ACT_SWEEP,
+      actSummary: null,
+      findings: [{
+        ...ACT_SWEEP.findings[0],
+        proposal: { ...ACT_SWEEP.findings[0].proposal, outcome: 'quarantined_pending_review' },
+      }],
+    };
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: skewed } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-proposal-outcome-0')).toHaveTextContent('Outcome unknown');
+    expect(screen.queryByTestId('ai-agent-run-sweep-proposal-link-0')).not.toBeInTheDocument();
+  });
+
+  it('an explicit `pending` outcome still renders the approvals link — it is recognised, not unknown', async () => {
+    const pendingOnly = {
+      ...ACT_SWEEP,
+      actSummary: null,
+      findings: [{
+        ...ACT_SWEEP.findings[0],
+        proposal: { ...ACT_SWEEP.findings[0].proposal, outcome: 'pending', cohort: true, stoppedBy: null },
+      }],
+    };
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: pendingOnly } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-proposal-link-0')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-sweep-proposal-outcome-0')).not.toBeInTheDocument();
+  });
 });

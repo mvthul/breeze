@@ -56,6 +56,7 @@ import { orgSummaryRoutes } from './routes/orgSummary';
 import { orgAccountReadinessRoutes } from './routes/orgAccountReadiness';
 import { serviceDeliverableRoutes } from './routes/serviceDeliverables';
 import { deliverableTemplateRoutes } from './routes/deliverableTemplates';
+import { ticketChecklistTemplateRoutes } from './routes/ticketChecklistTemplates';
 import { orgDocumentRoutes } from './routes/orgDocuments';
 import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
@@ -100,6 +101,8 @@ import { mobileDeviceBlockedMiddleware } from './middleware/mobileDeviceBlocked'
 import { analyticsRoutes } from './routes/analytics';
 import { fleetFindingsRoutes } from './routes/fleetFindings';
 import { discoveryRoutes } from './routes/discovery';
+import { discoveryAssetProbeRoutes } from './routes/discoveryAssetProbe';
+import { monitoringAssetMetricsRoutes } from './routes/monitoringAssetMetrics';
 import { networkBaselineRoutes } from './routes/networkBaselines';
 import { networkChangeRoutes } from './routes/networkChanges';
 import { portalRoutes } from './routes/portal';
@@ -187,6 +190,7 @@ import { adminRoutes } from './routes/admin';
 import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
+import { toolSourcesRoutes } from './routes/toolSources';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { reportStalePamRuleTiers } from './services/pamRuleTierDriftCheck';
 import {
@@ -246,6 +250,7 @@ import { initializeDeviceEventHandlers } from './events/deviceEvents';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
+import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
 import { shutdownEventDispatchQueue } from './services/eventDispatchQueue';
 import {
@@ -858,6 +863,7 @@ api.route('/orgs', orgSummaryRoutes);
 api.route('/orgs', orgAccountReadinessRoutes); // GET /orgs/account-readiness — Organizations board bulk read (#5721 W01)
 api.route('/orgs', serviceDeliverableRoutes); // /orgs/:orgId/deliverables/* (#5573 W01)
 api.route('/deliverable-templates', deliverableTemplateRoutes); // (#5573 W05)
+api.route('/ticket-checklist-templates', ticketChecklistTemplateRoutes); // (#5783 W02)
 api.route('/orgs', orgDocumentRoutes); // /orgs/:orgId/documents/* (#5573 W03)
 api.route('/orgs', orgKeyDateRoutes);         // /orgs/:orgId/key-dates/* (#5573 W01)
 api.route('/users', userRoutes);
@@ -955,6 +961,10 @@ api.route('/', lifecycleAdminRoutes);
 api.route('/analytics', analyticsRoutes);
 api.route('/fleet/findings', fleetFindingsRoutes);
 api.route('/discovery', discoveryRoutes);
+// Second sub-router at the same prefix (ten prefixes here already are). The
+// probe lives in its own module so routes/discovery.ts does not grow past 2,247
+// lines; no path overlaps, so mount order is immaterial.
+api.route('/discovery', discoveryAssetProbeRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
 api.route('/portal', portalRoutes);
@@ -969,6 +979,9 @@ api.route('/user-risk', userRiskRoutes);
 api.route('/snmp', snmpRoutes);
 api.route('/monitors', monitorRoutes);
 api.route('/monitoring', monitoringRoutes);
+// Metric history in its own module (routes/monitoring.ts is already 1,071
+// lines). `/assets/:id` cannot shadow `/assets/:id/metrics`.
+api.route('/monitoring', monitoringAssetMetricsRoutes);
 api.route('/audit-baselines', auditBaselineRoutes);
 api.route('/software', softwareRoutes);
 api.route('/software-policies', softwarePoliciesRoutes);
@@ -1070,6 +1083,9 @@ api.route('/admin', accountDeletionAdminRoutes);
 // asset serving. Distinct from `/admin/extensions` above (platform-admin
 // operations) — this is the tenant-facing surface a browser reads.
 api.route('/extensions', extensionsWebRoutes);
+// Tool Catalog W1 (#5215 / #5216) — BYO MCP tool sources. 404s whole-router
+// when TOOL_SOURCES_ENABLED is off (routes/toolSources.ts's first `use('*')`).
+api.route('/tool-sources', toolSourcesRoutes);
 
 // One system-scoped state store, shared by the per-request enabled gate and the
 // built-in extension loader. The gate checks installed_extensions.enabled on
@@ -1413,6 +1429,10 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
       name: 'queues',
       tasks: [
         shutdownEventDispatcher,
+        // Execution plane W05: the chat run bridge owns its own per-org ioredis
+        // subscribers. A leaked one keeps the process alive past SIGTERM, which
+        // is how a rolling deploy turns into a stuck pod.
+        shutdownChatRunBridge,
         shutdownEventDispatchWorker,
         shutdownEventDispatchQueue,
         shutdownAgentCommandRelayWorker,

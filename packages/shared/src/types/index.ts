@@ -845,6 +845,7 @@ export * from './vulnerability';
 export * from './postureReport';
 export * from './executiveSummaryReport';
 export * from './hardwareLifecycleReport';
+export * from './threatDetectionReport';
 
 // ============================================
 // Portal Visibility DTOs (Wave 1 - #4562)
@@ -884,3 +885,9 @@ export * from './tickets';
 // ============================================
 
 export * from './aiArtifacts';
+
+// ============================================
+// Tool sources (BYO MCP/OpenAPI, spec 2026-09-07)
+// ============================================
+
+export * from './toolSources';

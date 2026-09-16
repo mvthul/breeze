@@ -1,6 +1,7 @@
 import type { AiApprovalScope, AiToolStatus } from './ai';
 import type { AiAgentRunFleetDesignDto } from './fleetDesign';
 import type { AiAgentRunPatchDto } from './aiPatchPlan';
+import type { AiRunArtifactDto } from './aiArtifacts';
 import type {
   ActExecutionVerdict,
   ActVerificationVerdict,
@@ -475,6 +476,12 @@ export interface AiAgentRunAlertVerdictDto {
  */
 export type SweepProposalReason =
   | 'device_not_in_evidence'
+  // #4442 W04 — the ANTI-SUBSTITUTION refusal. The device was in the evidence
+  // set, but the SUBJECT the proposal names (a service name, a mount point, a
+  // set of vulnerability ids) matches no row the system actually loaded.
+  // Distinct from `device_not_in_evidence` because it is a different claim:
+  // evidence about service A does not authorize acting on service B.
+  | 'subject_not_in_evidence'
   | 'device_not_in_org'
   | 'not_allowlisted'
   | 'no_eligible_approvers'
@@ -509,7 +516,54 @@ export interface AiAgentRunSweepFindingDto {
     disposition: 'intent_created' | 'refused' | 'cap_reached' | 'error';
     reason: SweepProposalReason | null;
     intentId: string | null;
+    /**
+     * #4442 W05 — what actually HAPPENED to the minted intent, read live off
+     * `action_intents` rather than inferred from the run's pending-only
+     * `intent_ids`. `null` when no intent was minted, or when the intent is
+     * no longer readable. `auto_executing` is the act-mode case: approved by
+     * POLICY, not by a human.
+     */
+    outcome: AiAgentRunSweepProposalOutcome | null;
+    /**
+     * #4442 W05 — was this proposal inside the occurrence's readiness cohort,
+     * i.e. minted act-eligible? `null` for a DISARMED occurrence and for every
+     * run from before act mode, which is what keeps those rendering exactly as
+     * they did. `false` means an ordinary supervised card — never a drop.
+     */
+    cohort: boolean | null;
+    /**
+     * #4442 W05 — which cap ended the cohort walk (`fleet_cap`, `day_cap` or
+     * `occurrence_cap`), so the UI can say WHY the rest are waiting. `null`
+     * when nothing bound, and for a disarmed occurrence.
+     */
+    stoppedBy: string | null;
   } | null;
+}
+
+/**
+ * #4442 W05 — the live outcome of a sweep-minted intent. `auto_executing`
+ * exists because act mode makes the interesting outcomes non-pending: an
+ * intent approved by POLICY (`decided_via = 'policy'`) is running unattended,
+ * which reads very differently from one a human approved.
+ */
+export const AI_AGENT_RUN_SWEEP_PROPOSAL_OUTCOMES = [
+  'pending', 'auto_executing', 'executed', 'failed', 'declined', 'expired',
+] as const;
+export type AiAgentRunSweepProposalOutcome =
+  (typeof AI_AGENT_RUN_SWEEP_PROPOSAL_OUTCOMES)[number];
+
+/**
+ * #4442 W05 — the per-occurrence act roll-up shown above the findings table.
+ * `devicesActed` counts DISTINCT devices whose proposal was minted
+ * act-eligible, not intents; `devicesProposed` counts distinct devices any
+ * surviving proposal named. Deliberately NOT a promise of atomic execution: a
+ * cohort member can still lose the authorize race or fail decide-time
+ * revalidation and degrade to a human approval on its own.
+ */
+export interface AiAgentRunSweepActSummaryDto {
+  devicesActed: number;
+  devicesProposed: number;
+  stoppedBy: string | null;
 }
 
 /**
@@ -521,6 +575,12 @@ export interface AiAgentRunSweepFindingDto {
 export interface AiAgentRunSweepDto {
   scheduleId: string | null;
   occurrenceKey: string | null;
+  /**
+   * #4442 W05 — the act roll-up, or `null` for a DISARMED occurrence and for
+   * every pre-act-mode run (no cohort was ever computed, so there is nothing
+   * truthful to say).
+   */
+  actSummary: AiAgentRunSweepActSummaryDto | null;
   kinds: AiSweepKind[];
   summary: string;
   findings: AiAgentRunSweepFindingDto[];
@@ -537,6 +597,45 @@ export interface AiAgentRunProgressEntryDto {
   label: string;
   ordinal: number;
   at: string;
+}
+
+/**
+ * One `workspace_run` step, off `ai_run_workspaces.steps` (execution-plane spec
+ * §5.8). This is the audit trail a technician needs to trust a finding: the
+ * handles name the `step_script` and `step_stdout` artifacts, so the run page
+ * can show EXACTLY what code ran and what it printed. A handle is null when the
+ * artifact has since expired (30-day TTL) — render "expired", never a dead link.
+ */
+export interface AiAgentRunWorkspaceStepDto {
+  ordinal: number;
+  language: 'bash' | 'python' | 'node';
+  scriptArtifactHandle: string | null;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  stdoutArtifactHandle: string | null;
+}
+
+/**
+ * The sandbox this run used, projected off `ai_run_workspaces` (spec §6.2).
+ * `provider_ref` is deliberately NOT projected — it is a vendor handle the
+ * reaper needs and nothing outside the API has any use for.
+ */
+export interface AiAgentRunWorkspaceDto {
+  backend: string;
+  region: 'eu' | 'us';
+  status: string;
+  bootstrapHash: string | null;
+  createdAt: string;
+  readyAt: string | null;
+  destroyedAt: string | null;
+  cpuMs: number | null;
+  wallMs: number | null;
+  memAllocatedMb: number | null;
+  stagedBytes: number;
+  artifactBytes: number;
+  stepCount: number;
+  steps: AiAgentRunWorkspaceStepDto[];
 }
 
 export interface AiAgentRunDetailDto {
@@ -689,6 +788,21 @@ export interface AiAgentRunDetailDto {
    * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
    */
   narrativeDelivery: AiAgentRunNarrativeDeliveryDto | null;
+  /**
+   * Execution plane W05 (spec §5.8) — artifacts this run produced or captured,
+   * newest first. Empty for every run that produced none. The previews are RAW
+   * customer bytes: text-escape before rendering, never
+   * `dangerouslySetInnerHTML` (spec §8).
+   * Additive and ALWAYS PRESENT — does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  artifacts: AiRunArtifactDto[];
+  /**
+   * Execution plane W05 (spec §5.8, §6.2) — the sandbox and its step
+   * transcript, or null when the run never created one.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  workspace: AiAgentRunWorkspaceDto | null;
 }
 
 /** See `AiAgentRunDetailDto.narrativeDelivery`. */

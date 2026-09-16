@@ -10,17 +10,17 @@ import {
   type AlertVerdictSuggestedAction,
 } from './aiAgents';
 
-describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v12, execution plane W04 #5715)', () => {
-  it('is the literal 12', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(12);
+describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v13, AI sweeps act mode W05 #4442)', () => {
+  it('is the literal 13', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(13);
   });
 
-  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-12', () => {
+  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-13', () => {
     // Type-level assertion: this only compiles if `schemaVersion` is widened
-    // to `1 | … | 11`. If a future bump forgets to widen the union, `tsc`
+    // to `1 | … | 13`. If a future bump forgets to widen the union, `tsc`
     // fails this assignment, not a runtime check.
-    const versions: Array<AiAgentPolicySnapshot['schemaVersion']> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    const versions: Array<AiAgentPolicySnapshot['schemaVersion']> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
   });
 });
 
@@ -30,6 +30,14 @@ describe('AI_AGENT_LIMIT_DEFAULTS (sweep-profile limits, phase 2 P2-2)', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour).toBe(20);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepBudgetCentsPerRun).toBe(30);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepMaxTurns).toBe(8);
+  });
+});
+
+describe('AI_AGENT_LIMIT_DEFAULTS (patch-profile limits, AI patch agent W04 #5750)', () => {
+  it('sizes maxPatchRunsPerDay for the nightly occurrence plus reactive alert runs', () => {
+    // W04 routes patch-classified alerts into the same daily budget; 2 would
+    // let two alerts starve the scheduled occurrence.
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxPatchRunsPerDay).toBe(6);
   });
 });
 

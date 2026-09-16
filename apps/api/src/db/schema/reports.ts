@@ -36,7 +36,10 @@ export const reportTypeEnum = pgEnum('report_type', [
   'ai_fleet_design',
   // Hardware Lifecycle report: device replacement plan from purchase +
   // warranty dates (ported from the LanternOps portal PDF).
-  'hardware_lifecycle'
+  'hardware_lifecycle',
+  // Service-plan evidence W02 (#5784): Huntress incidents for an occurrence's
+  // period, with an explicit coverage window; see services/threatDetectionReport.ts.
+  'threat_detection_review'
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [
@@ -135,6 +138,17 @@ export const reportRuns = pgTable('report_runs', {
     () => portalUsers.id,
     { onDelete: 'set null' },
   ),
+  /**
+   * An `ai_run_artifacts` row attached to this report run by reference
+   * (execution-plane spec §6.3). `ON DELETE SET NULL`: an expired artifact
+   * leaves the run intact with nothing attached.
+   *
+   * The FK is created in SQL only (2026-10-16-192900-artifact-attachments.sql),
+   * not declared with `.references()`, to dodge an import cycle: `aiWorkspace`
+   * imports `aiAgents`, which imports THIS module for `reportRuns`. Same
+   * technique as `contracts.ts`'s catalog_item_id / site_id.
+   */
+  artifactId: uuid('artifact_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   // (id, report_id) key so service_deliverable_evidence can prove a run belongs to

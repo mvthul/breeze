@@ -59,6 +59,7 @@ export default defineConfig({
                 { slug: 'scripts/stopping-a-running-script' },
                 { slug: 'features/script-ai' },
                 { slug: 'features/ai-agents' },
+                { slug: 'features/ai-analysis-runs' },
                 { slug: 'features/ai-impact' },
                 { slug: 'features/automations' },
                 { slug: 'features/playbooks' },
@@ -144,6 +145,7 @@ export default defineConfig({
               label: 'AI & Intelligence',
               items: [
                 { slug: 'features/ai' },
+                { slug: 'features/tool-sources' },
                 { slug: 'features/ai-script-authoring' },
                 { slug: 'features/bring-your-own-llm-key' },
                 { slug: 'features/ml-insights' },

@@ -146,9 +146,14 @@ export interface AiAgentLimits {
    * AI patch agent (W01) — patch-profile admission caps, counted on their
    * own like every other profile. A patch run is scheduled once a day per
    * org (`0 2 * * *` default) plus the occasional manual "Run now", so
-   * `maxPatchRunsPerDay` (2) is enforced at admission rule 6b over the same
-   * rolling 24-hour window the design profile uses, not per hour. Anything
-   * above a couple a day for one org is a re-fire, not load.
+   * `maxPatchRunsPerDay` is enforced at admission rule 6b over the same
+   * rolling 24-hour window the design profile uses, not per hour. W04
+   * (#5750) routes patch-classified ALERTS into the same budget (one
+   * device-less reactive run per alert), so the default is 6 rather than the
+   * original 2: one nightly occurrence, one manual run, and four reactive
+   * alerts in a day still admit the occurrence. No snapshot version bump —
+   * the field already exists at v11 and only agents without an explicit
+   * value pick the new default up.
    * `patchMaxTurns` (20) covers one read of the pre-assembled evidence, a
    * small read-only drill-down floor, and one `submit_patch_plan` call —
    * see `patchProfile.ts`. Snapshot v11.
@@ -181,6 +186,29 @@ export interface AiAgentLimits {
   analysisMaxConcurrentRuns: number;
   analysisMaxStepTimeoutSeconds: number;
   analysisMaxStepsPerRun: number;
+  /**
+   * #4442 W05 — hard per-OCCURRENCE cap on how many distinct devices one
+   * sweep may touch unattended. Merged with `min` (the default), so an org
+   * may tighten it and never widen it. Default 3: a genuine canary, not a
+   * budget — a partner must deliberately raise it. Deliberately NOT reusing
+   * `maxActionsPerRun` (also 3), which governs how many CARDS a sweep may
+   * raise; conflating "how many approvals" with "how many machines may it
+   * touch unattended" is exactly the distinction #4442 is about (OD-3).
+   * Enforced in `persistSweepFindings`' cohort walk (`sweepActCohort.ts`) —
+   * see runService.ts's limits-coverage inventory. Snapshot v13.
+   */
+  maxUnattendedDevicesPerSweep: number;
+  /**
+   * #4442 W05 — verified-evidence count from SWEEP-MINTED intents a colon key
+   * must reach before act mode graduates for a (org, op) pair, ON TOP OF
+   * `promoteThreshold`. Merged with `max`, like `promoteThreshold`: a bar, not
+   * a budget. Verified evidence from alert-triggered, run-bound intents shows
+   * the OP is safe; it says nothing about whether the sweep picked the right
+   * TARGET, and target selection is the entire new risk surface (OD-5).
+   * Enforced in `graduationService.evaluateEligibility` — see runService.ts's
+   * limits-coverage inventory. Snapshot v13.
+   */
+  sweepPromoteThreshold: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -233,7 +261,7 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   // Patch-profile admission caps (AI patch agent W01) — see
   // AiAgentLimits.maxConcurrentPatchRuns's docstring.
   maxConcurrentPatchRuns: 1,
-  maxPatchRunsPerDay: 2,
+  maxPatchRunsPerDay: 6,
   patchBudgetCentsPerRun: 60,
   patchMaxTurns: 20,
   // Analysis-profile caps (execution plane W04, spec §5.4 table) — see
@@ -250,11 +278,29 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   analysisMaxConcurrentRuns: 2,
   analysisMaxStepTimeoutSeconds: 300,
   analysisMaxStepsPerRun: 40,
+  // Sweep act-mode caps (#4442 W05) — see
+  // AiAgentLimits.maxUnattendedDevicesPerSweep's docstring.
+  // maxUnattendedDevicesPerSweep merges with min (the default);
+  // sweepPromoteThreshold merges with max (effectivePolicy.ts).
+  maxUnattendedDevicesPerSweep: 3,
+  sweepPromoteThreshold: 10,
 });
 
 export interface AiAgentTriggers {
   alertSeverities: Array<'critical' | 'high' | 'medium' | 'low' | 'info'>;
   alertRuleIds?: string[];
+  /**
+   * AI patch agent W04 (#5750) — narrowing filter on the triggering alert's
+   * TEMPLATE category (`alert_templates.category`, reached through
+   * `alerts.rule_id → alert_rules.template_id`; `PATCH_ALERT_CATEGORY` is the
+   * one every patch source carries). Same `undefined`-means-unrestricted /
+   * `.min(1)` convention as `ticketCategories` below — never `[]`. Enforced
+   * beside `alertRuleIds` by `runService.ts`'s `evaluateAgentTriggerFilters`;
+   * an alert whose category could not be resolved (no rule, or a rule whose
+   * template has no category) fails a non-empty filter, exactly as a
+   * `ruleId === null` alert fails a non-empty `alertRuleIds`.
+   */
+  alertCategories?: string[];
   siteIds?: string[];
   deviceGroupIds?: string[];
   deviceTags?: string[];
@@ -542,12 +588,19 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * still execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a
  * pre-v12 snapshot. Every site that switches on `schemaVersion` must tolerate
  * 1 through 12.
+ *
+ * v13 (this bump, AI sweeps act mode W05): `maxUnattendedDevicesPerSweep` and
+ * `sweepPromoteThreshold` — see `AiAgentLimits.maxUnattendedDevicesPerSweep`'s
+ * docstring. Same rule as every prior bump: a v1-v12 in-flight run's snapshot
+ * lacks them and MUST still execute; read sites fall back to
+ * `AI_AGENT_LIMIT_DEFAULTS` for a pre-v13 snapshot. Every site that switches
+ * on `schemaVersion` must tolerate 1 through 13.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 12 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 13 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), or 12 (current). Read sites must tolerate all twelve. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), 12 (pre-sweep-act-limits), or 13 (current). Read sites must tolerate all thirteen. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;

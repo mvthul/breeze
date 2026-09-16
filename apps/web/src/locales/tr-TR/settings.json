@@ -211,7 +211,8 @@
       "actionPlan": "Eylem Planı",
       "autoApprove": "Otomatik Onayla",
       "hybridPlan": "Hibrit Plan"
-    }
+    },
+    "overridesOrgTab": "Burada belirlediğiniz alanlar, her kuruluşun yapay zeka sekmesindeki aynı alanın üzerine yazar ve onu kilitler."
   },
   "aiBudgetThresholds": {
     "invalid": "1 ile 99 arasında, virgülle ayrılmış en fazla beş tam sayı girin."
@@ -896,7 +897,10 @@
     },
     "customCss": {
       "title": "Özel CSS (gelişmiş)",
-      "description": "Aralığa, tipografiye veya düzene ince ayar yapmak için özel stiller kullanın."
+      "description": "Aralığa, tipografiye veya düzene ince ayar yapmak için özel stiller kullanın.",
+      "saveError": "Özel CSS kaydedilemedi.",
+      "loadError": "Şu anda kayıtlı özel CSS yüklenemedi. Bu yüklenene kadar düzenleme devre dışı.",
+      "saveBlockedByLoadError": "Özel CSS kaydedilmedi: mevcut değer doğrulanamadı. Sayfayı yeniden yükleyip tekrar deneyin."
     },
     "preview": {
       "action": "Önizleme",
@@ -1441,7 +1445,7 @@
     "completeReview": "İncelemeyi Tamamla"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "Yapay Zeka Kullanımı ve Bütçe",
+    "aIUsageBudget": "Yapay Zeka Kullanımı",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "AI asistanının kullanımını izleyin ve bütçe sınırlarını yapılandırın",
     "budgetConfiguration": "Bütçe Yapılandırması",
     "aIEnabled": "Yapay Zeka Etkin",
@@ -1491,7 +1495,19 @@
     "untitled": "Başlıksız",
     "billedToPartnerKey": "Anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
     "billedToPartnerKeyViaEndpoint": "{{name}} üzerinden anahtarınıza faturalandırılır: yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
-    "creditsRemaining": "Kalan Breeze yapay zeka kredisi"
+    "creditsRemaining": "Kalan Breeze yapay zeka kredisi",
+    "defaultValue": "Varsayılan ({{value}})",
+    "viewPartnerWideBudgets": "İş ortağı yapay zeka bütçeleri",
+    "monitorAIAssistantUsage": "Yapay zeka asistanı kullanımını izleyin",
+    "effectiveBudget": "Geçerli bütçe",
+    "effectiveBudgetHelp": "Bu kuruluş için şu anda geçerli olan sınırlar ve her birinin nerede belirlendiği.",
+    "effectiveBudgetUnavailable": "Geçerli bütçe yüklenemedi. Yeniden denemek için sayfayı yeniden yükleyin.",
+    "sourcePartner": "İş ortağı tarafından belirlendi",
+    "sourceOrganization": "Kuruluş tarafından belirlendi",
+    "sourceDefault": "Varsayılan",
+    "selectOrgForEffectiveBudget": "Geçerli bütçesini görmek için bir kuruluş seçin veya iş ortağı çapındaki varsayılan ayarları düzenleyin.",
+    "editPartnerWideDefaults": "İş ortağı çapındaki varsayılan ayarları düzenle",
+    "thresholdsOff": "Kapalı"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1525,6 +1541,14 @@
       "dailyOrRarerHint": "Yama planı günde en fazla bir kez çalışır: sabit dakika ve saat, ayın-günü, ay ve haftanın günü için ise * veya sabit bir liste. Örneğin 0 2 * * * her gece saat 02:00'de çalışır.",
       "kindsRequired": "En az bir denetim seçin.",
       "enabled": "Etkin",
+      "actMode": {
+        "label": "Eylem modu",
+        "hint": "Etkinleştirildiğinde, bu zamanlama onay beklemek yerine belirli düzeltmeleri otomatik olarak uygulayabilir.",
+        "disabledHint": "Eylem modunu etkinleştirmek için tüm kuruluşlara tam iş ortağı erişimi gerekir.",
+        "scopeNote": "Gözetimsiz düzeltmeler yalnızca durmuş bir hizmeti yeniden başlatmakla sınırlıdır ve yalnızca kuruluşuna manage_services:restart izni zaten verilmiş cihazlarda uygulanır. Bunun dışındaki her şey onay beklemeye devam eder.",
+        "disableForOrg": "Bu kuruluş için eylem modunu devre dışı bırak",
+        "disableForOrgHint": "Bu kuruluş, burada devre dışı bırakılmadıkça her zaman iş ortağı temel çizgisinin eylem modu ayarını devralır — bağımsız olarak asla etkinleştirilemez."
+      },
       "override": "Bu kuruluş için geçersiz kıl",
       "editOverride": "Bu kuruluşun geçersiz kılmasını düzenle",
       "overrideHint": "Bu kuruluşun, iş ortağı temel çizgisini geçersiz kılması. Her zaman temel çizginin sıklığıyla çalışır.",
@@ -1543,7 +1567,8 @@
         "pending_reboots": "Bekleyen yeniden başlatmalar",
         "failed_backups": "Başarısız yedeklemeler",
         "service_down": "Durdurulmuş hizmet",
-        "unpatched_critical": "Yamalanmamış kritik güvenlik açıkları"
+        "unpatched_critical": "Yamalanmamış kritik güvenlik açıkları",
+        "expiring_certs": "Süresi dolan sertifikalar"
       },
       "toasts": {
         "saved": "Zamanlama kaydedildi",
@@ -1565,7 +1590,8 @@
         "agentKindNotDesigner": "Bir filo tasarımı zamanlaması bir Filo tasarımcısı aracısını hedeflemelidir.",
         "agentKindNotPatch": "Bir yama planı zamanlaması bir Yama aracısını hedeflemelidir.",
         "kindsNotEmpty": "Haftalık rapor zamanlaması denetim çalıştırmaz. Kaydetmeden önce seçili denetimleri kaldırın.",
-        "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın."
+        "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın.",
+        "actModeOrgCannotArm": "Eylem modu iş ortağı temel çizgisinde etkin; bir kuruluş geçersiz kılması bunu yalnızca devre dışı bırakabilir, asla etkinleştiremez."
       }
     },
     "title": "Yapay Zeka Aracıları",
@@ -1776,6 +1802,9 @@
       "supervisedActionKeysFailed": "Politikayla karar verilebilecek işlem listesi yüklenemedi, bu nedenle gözetimsiz yetkilendirme şu anda değiştirilemiyor.",
       "ticketAutonomousWrites": "Otonom talep yazmaları",
       "ticketAutonomousWritesHint": "Yalnızca organizasyon geçersiz kılması — otonom talep yazmaları eylem modunu ve bu organizasyon düzeyindeki katılımı gerektirir",
+      "alertCategories": "Uyarı kategorileri",
+      "alertCategoriesHint": "Yalnızca şablon kategorisi burada listelenen uyarılar bu aracıyı uyandırır. Herhangi bir kategori için boş bırakın. Yama uyarıları \"patching\" taşır.",
+      "alertCategoriesPlaceholder": "örn. patching, monitor",
       "enabledHint": "«Etkin» ve mod ayrı anahtarlardır ve bir çalıştırma ikisini de gerektirir: bu kapalıyken mod ne olursa olsun hiçbir şey çalışmaz, Kapalı modda ise bu açık olsa bile hiçbir şey çalışmaz.",
       "enabledCreateHint": "Yeni aracılar kapalı olarak oluşturulur. Aşağıdaki araç izin listesini ve sınırları gözden geçirin, ardından aracının çalışmaya başlamasını istediğinizde bunu açın.",
       "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez.",
@@ -1863,6 +1892,20 @@
         "empty": "Bildirilen bulgu yok.",
         "evidenceTruncated": "Kanıtlar kısaltıldı: eşleşen tüm satırlar aracıya gösterilmedi.",
         "proposalCreated": "Onay istendi",
+        "actSummary": "{{proposed}} cihazdan {{acted}} tanesinde gözetimsiz işlem yapıldı; kalanlar onay bekliyor.",
+        "outcomes": {
+          "auto_executing": "Gözetimsiz çalışıyor",
+          "executed": "Tamamlandı",
+          "failed": "Başarısız",
+          "declined": "Reddedildi",
+          "expired": "Süresi doldu",
+          "unknown": "Sonuç bilinmiyor"
+        },
+        "stoppedBy": {
+          "fleet_cap": "günlük filo sınırına ulaşıldı",
+          "day_cap": "günlük işlem sınırına ulaşıldı",
+          "occurrence_cap": "tarama başına cihaz sınırına ulaşıldı"
+        },
         "columns": {
           "kind": "Kontrol",
           "severity": "Önem düzeyi",
@@ -1877,7 +1920,8 @@
           "pending_reboots": "Bekleyen yeniden başlatmalar",
           "failed_backups": "Başarısız yedeklemeler",
           "service_down": "Servis durdu",
-          "unpatched_critical": "Yamalanmamış kritik açıklar"
+          "unpatched_critical": "Yamalanmamış kritik açıklar",
+          "expiring_certs": "Süresi dolmak üzere olan sertifikalar"
         },
         "severities": {
           "critical": "Kritik",
@@ -1888,6 +1932,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Cihaz tarama kanıtlarında yok",
+          "subject_not_in_evidence": "Öğe tarama kanıtlarında yok",
           "device_not_in_org": "Cihaz bu organizasyona ait değil",
           "not_allowlisted": "Bu aracı için araç izinli değil",
           "no_eligible_approvers": "Uygun onaylayıcı yok",
@@ -1917,6 +1962,8 @@
         "failureClass": "Hata sınıfı: {{label}}",
         "attempts": "{{count}} başarısız deneme",
         "attempts_other": "{{count}} başarısız deneme",
+        "rebootWindow": "Pencere: {{start}} – {{end}}",
+        "redundancyGroup": "Yedeklilik grubu: {{group}}",
         "escalation": "Bir kişinin bakması gerekiyor — bu otomatik olarak yeniden denenmeyecek.",
         "escalations": "{{count}} yükseltme",
         "escalations_other": "{{count}} yükseltme",
@@ -1946,7 +1993,10 @@
           "class_not_retryable": "Bu tür bir hata hiçbir zaman otomatik olarak yeniden denenmez",
           "chase_attempts_exhausted": "Bu güncelleme için yeniden deneme sınırına ulaşıldı — bunun yerine yükseltildi",
           "attempt_count_mismatch": "Belirtilen deneme sayısı kanıtlarla eşleşmiyor",
-          "failure_history_truncated": "Hata geçmişi eksikti, bu nedenle yeniden deneme sayısına güvenilemedi"
+          "failure_history_truncated": "Hata geçmişi eksikti, bu nedenle yeniden deneme sayısına güvenilemedi",
+          "reboot_policy_not_window_gated": "Cihazın yeniden başlatma politikası bakım pencereleri dışında yeniden başlatıyor, bu nedenle bir pencere planı uygulanmaz",
+          "redundancy_unknown": "Cihazın yedeklilik grubu bilinmiyor, bu nedenle sıralama kontrol edilemedi",
+          "redundancy_collision": "Aynı yedeklilik grubundaki başka bir cihaz bu pencere için zaten planlandı"
         },
         "ineligible": {
           "not_outstanding": "Bu cihazda bekleyen değil",
@@ -2026,7 +2076,9 @@
           "startedAt": "Başladı",
           "finishedAt": "Tamamlandı",
           "turnCount": "Tur sayısı",
-          "summary": "Özet"
+          "summary": "Özet",
+          "computeCost": "Hesaplama",
+          "computeEstimated": "(tahmini)"
         },
         "flags": {
           "budgetExceeded": "Bütçe aşıldı",
@@ -2058,6 +2110,29 @@
             "skipped": "Doğrulama atlandı"
           },
           "viewApproval": "Onaylar'da incele"
+        },
+        "artifacts": {
+          "title": "Bu çalıştırmanın oluşturduğu dosyalar",
+          "download": "İndir",
+          "preview": "Önizleme",
+          "attachToTicket": "Bilete ekle",
+          "attach": "{{name}} dosyasını ekle",
+          "ticketIdPlaceholder": "Bilet No",
+          "attachedToTicket": "Bilete eklendi",
+          "attachFailed": "Dosya bu bilete eklenemedi"
+        },
+        "workspace": {
+          "title": "Korumalı alanda ne çalıştı",
+          "region": "Bölge",
+          "status": "Korumalı alan",
+          "cpu": "İşlemci süresi",
+          "steps": "Adımlar",
+          "script": "Betik",
+          "stdout": "Çıktı",
+          "exitCode": "çıkış",
+          "timedOut": "zaman aşımı",
+          "noExitCode": "çıkış kodu yok",
+          "artifactExpired": "süresi doldu"
         },
         "progress": {
           "title": "İlerleme"
@@ -2162,6 +2237,7 @@
       "emptyState": {
         "title": "Bu dönemde henüz yapay zekâ sonucu yok",
         "description": "Yapay zekâ ajanlarınız gölge veya eylem modunda bir uyarıyı değerlendirdiğinde, bir bileti sınıflandırdığında ya da bir düzeltme uyguladığında sonuçlar burada görünecek. Yukarıdaki raporlama dönemini genişletin veya başlamak için bir ajan kurun.",
+        "descriptionWidestWindow": "Yapay zekâ ajanlarınız gölge veya eylem modunda bir uyarıyı değerlendirdiğinde, bir bileti sınıflandırdığında ya da bir düzeltme uyguladığında sonuçlar burada görünecek. En geniş raporlama döneminde bile henüz yeterli veri yok — başlamak için bir ajan kurun.",
         "action": "Ajan kur"
       },
       "tileGroups": {
@@ -2349,7 +2425,8 @@
         "below_threshold": "Henüz yeterli doğrulanmış çalıştırma yok.",
         "too_recent": "İlk doğrulanmış çalıştırma henüz çok yeni.",
         "has_failures": "Bu dönemde bir başarısızlık ya da yineleme kaydedildi.",
-        "not_policy_decidable": "Bu işlem hiçbir zaman önceden yetkilendirilemez."
+        "not_policy_decidable": "Bu işlem hiçbir zaman önceden yetkilendirilemez.",
+        "below_sweep_threshold": "Hedefi zamanlanmış bir taramanın seçtiği daha fazla doğrulanmış düzeltme gerekiyor."
       },
       "confirm": {
         "title": "Ön yetki isteği oluştur",
@@ -4272,6 +4349,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Yapay zeka bütçesi",
+    "description": "Bu kuruluşta yapay zeka asistanı için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
+    "selectOrganization": "Yapay zeka bütçesini yapılandırmak için bir kuruluş seçin."
+  },
   "orgSettingsPage": {
     "loading": "Organizasyon ayarları yükleniyor...",
     "confirmDiscard": "Bu bölümde kaydedilmemiş değişiklikleriniz var. Geçiş yapmak onları ortadan kaldıracaktır. Devam etmek?",
@@ -4325,7 +4407,9 @@
       "notifications": "Bildirimler",
       "notificationsDescription": "E-posta, Slack, web kancaları",
       "ticketing": "Biletleme",
-      "ticketingDescription": "SLA ve faturalandırmayı geçersiz kılma"
+      "ticketingDescription": "SLA ve faturalandırmayı geçersiz kılma",
+      "ai": "Yapay Zeka",
+      "aiDescription": "Yapay zeka asistanı bütçesi, hız sınırları ve onay modu"
     },
     "overview": {
       "title": "Organizasyona genel bakış",
@@ -4346,6 +4430,12 @@
       "organizationId": "Kuruluş Kimliği",
       "copyOrganizationId": "Kuruluş Kimliğini Kopyala",
       "organizationIdHelp": "Kullanıcıları davet ederken veya entegrasyonları yapılandırırken bu kimliği kullanın."
+    },
+    "ai": {
+      "externalProcessing": "Korumalı alanda yapay zeka analizine izin ver",
+      "externalProcessingDescription": "Yapay zeka analiz çalıştırmalarının bu kuruluş için kodu, ağ erişimi olmayan ve bu kuruluşun bölgesinde barındırılan izole bir korumalı alanda çalıştırmasına olanak tanır. Varsayılan olarak kapalıdır.",
+      "externalProcessingSaved": "Kaydedildi",
+      "externalProcessingSaveFailed": "Bu ayar değiştirilemedi"
     },
     "breadcrumbs": {
       "settings": "Ayarlar",
@@ -5185,6 +5275,16 @@
     "empty": {
       "title": "Henüz değişken yok",
       "description": "Aynı jetonu her müşterinin komut dosyalarına yapıştırmayı durdurmak için bir tane oluşturun."
+    },
+    "filters": {
+      "searchLabel": "Değişkenleri ara",
+      "searchPlaceholder": "Anahtar veya açıklamaya göre ara",
+      "scopeGroupLabel": "Kapsama göre filtrele",
+      "scopeAll": "Tüm kapsamlar"
+    },
+    "noMatches": {
+      "title": "Filtrelerinize uyan değişken yok",
+      "description": "Farklı bir arama terimi deneyin veya kapsam filtresini temizleyin."
     },
     "errors": {
       "load": "Değişkenler yüklenemedi."
