@@ -34,7 +34,9 @@ import {
   partnerUsers,
   remoteSessions,
   roles,
+  ssoProviders,
   userPasskeys,
+  userSsoIdentities,
   users,
 } from '../db/schema';
 import { getRedis } from './redis';
@@ -351,6 +353,17 @@ export async function loadRevocationRecheckRow(
           userHasPasskey: sql<boolean>`EXISTS (
             SELECT 1 FROM ${userPasskeys} WHERE ${userPasskeys.userId} = ${users.id}
           )`,
+          userHasTrustedIdpMfa: sql<boolean>`EXISTS (
+            SELECT 1 FROM ${userSsoIdentities}
+            JOIN ${ssoProviders} ON ${userSsoIdentities.providerId} = ${ssoProviders.id}
+            WHERE ${userSsoIdentities.userId} = ${users.id}
+              AND ${ssoProviders.status} = 'active'
+              AND ${ssoProviders.trustsIdpMfa} = true
+              AND (
+                ${ssoProviders.partnerId} = ${users.partnerId}
+                OR (${users.orgId} IS NOT NULL AND ${ssoProviders.orgId} = ${users.orgId})
+              )
+          )`,
           orgRoleId: organizationUsers.roleId,
           orgSiteIds: organizationUsers.siteIds,
           orgForceMfa: orgRole,
@@ -434,7 +447,10 @@ export async function loadRevocationRecheckRow(
           permissionsEpoch: Number(found.userPermissionsEpoch),
           orgId: found.userOrgId ?? null,
           partnerId: found.userPartnerId,
-          mfaProtected: found.userMfaEnabled === true || found.userHasPasskey === true,
+          mfaProtected:
+            found.userMfaEnabled === true ||
+            found.userHasPasskey === true ||
+            found.userHasTrustedIdpMfa === true,
         },
         orgMembership: found.orgRoleId
           ? {
