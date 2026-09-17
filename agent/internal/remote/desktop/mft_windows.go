@@ -500,22 +500,41 @@ func (m *mftEncoder) enumAndActivate(flags uint32, inputType, outputType *mftReg
 		return 0, fmt.Errorf("MFTEnumEx found %d encoders (flags=0x%X, HRESULT=0x%08X)", count, flags, uint32(hr))
 	}
 
-	// ppActivate is a pointer to an array of IMFActivate pointers.
-	// Get the first one, then release the complete activation array.
-	activatePtr := *(*uintptr)(unsafe.Pointer(ppActivate))
+	// ppActivate is a pointer to an array of IMFActivate pointers. Enumeration
+	// commonly includes transforms that are installed but not usable in the
+	// current session (for example a discrete-GPU encoder while the active
+	// display belongs to an iGPU). Activating only entry zero makes that stale
+	// candidate hide every valid Intel/NVIDIA/AMD encoder following it.
 	defer releaseMFTActivations(ppActivate, count)
 
-	// ActivateObject(IID_IMFTransform, &transform)
-	var transform uintptr
-	_, err := comCall(activatePtr, vtblActivateObject,
-		uintptr(unsafe.Pointer(&iidIMFTransform)),
-		uintptr(unsafe.Pointer(&transform)),
-	)
+	activations := unsafe.Slice((*uintptr)(unsafe.Pointer(ppActivate)), count)
+	var lastErr error
+	for index, activatePtr := range activations {
+		if activatePtr == 0 {
+			lastErr = fmt.Errorf("candidate %d has a nil activation", index)
+			continue
+		}
 
-	if err != nil {
-		return 0, fmt.Errorf("ActivateObject failed: %w", err)
+		// ActivateObject(IID_IMFTransform, &transform). An activated transform
+		// owns its own COM reference, so releasing the activation array below
+		// does not invalidate the selected transform.
+		var transform uintptr
+		_, err := comCall(activatePtr, vtblActivateObject,
+			uintptr(unsafe.Pointer(&iidIMFTransform)),
+			uintptr(unsafe.Pointer(&transform)),
+		)
+		if err == nil && transform != 0 {
+			slog.Info("MFT candidate activated", "candidate", index, "candidates", count, "flags", fmt.Sprintf("0x%X", flags))
+			return transform, nil
+		}
+		if err == nil {
+			err = fmt.Errorf("ActivateObject returned a nil transform")
+		}
+		lastErr = err
+		slog.Debug("MFT candidate activation rejected", "candidate", index, "candidates", count, "flags", fmt.Sprintf("0x%X", flags), "error", err.Error())
 	}
-	return transform, nil
+
+	return 0, fmt.Errorf("could not activate any of %d MFT candidates (flags=0x%X): %w", count, flags, lastErr)
 }
 
 // enumerateMFTActivations returns an owned IMFActivate array. The caller must
