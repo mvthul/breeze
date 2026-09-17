@@ -39,7 +39,9 @@ jobs:
         working-directory: apps/helper
         env:
           TAURI_SIGNING_PRIVATE_KEY: ''
-        run: pnpm tauri build --target x86_64-pc-windows-msvc --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        run: |
+          Set-Content -Path tauri-test-config.json -Value '{"bundle":{"createUpdaterArtifacts":false}}'
+          pnpm tauri build --target x86_64-pc-windows-msvc --config tauri-test-config.json
 
       - name: Upload Helper MSI
         uses: actions/upload-artifact@v4
@@ -83,7 +85,9 @@ jobs:
         working-directory: apps/viewer
         env:
           TAURI_SIGNING_PRIVATE_KEY: ''
-        run: pnpm tauri build --target x86_64-pc-windows-msvc --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        run: |
+          Set-Content -Path tauri-test-config.json -Value '{"bundle":{"createUpdaterArtifacts":false}}'
+          pnpm tauri build --target x86_64-pc-windows-msvc --config tauri-test-config.json
 
       - name: Upload Viewer MSI
         uses: actions/upload-artifact@v4
