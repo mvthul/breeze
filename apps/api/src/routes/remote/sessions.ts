@@ -968,10 +968,10 @@ sessionRoutes.post(
     // Look up GPU vendor from device hardware inventory
     let gpuVendor: string | undefined;
     try {
-      const [hw] = await db.select({ gpuModel: deviceHardware.gpuModel })
+      const [hw] = await withSystemDbAccessContext(() => db.select({ gpuModel: deviceHardware.gpuModel })
         .from(deviceHardware)
         .where(eq(deviceHardware.deviceId, device.id))
-        .limit(1);
+        .limit(1));
       if (hw?.gpuModel) {
         const g = hw.gpuModel.toLowerCase();
         // Prefer Intel on hybrid systems for the QuickSync fallback. The

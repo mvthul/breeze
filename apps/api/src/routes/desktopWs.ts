@@ -1714,10 +1714,10 @@ export function createDesktopWsRoutes(
       // route so the agent can prefer Intel Quick Sync on Intel+NVIDIA hosts.
       let gpuVendor: string | undefined;
       try {
-        const [hw] = await db.select({ gpuModel: deviceHardware.gpuModel })
+        const [hw] = await withSystemDbAccessContext(() => db.select({ gpuModel: deviceHardware.gpuModel })
           .from(deviceHardware)
           .where(eq(deviceHardware.deviceId, access.device.id))
-          .limit(1);
+          .limit(1));
         if (hw?.gpuModel) {
           const gpuModel = hw.gpuModel.toLowerCase();
           if (gpuModel.includes('intel') || gpuModel.includes('uhd') || gpuModel.includes('iris')) {
