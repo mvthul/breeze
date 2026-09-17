@@ -15,14 +15,13 @@ type quicksyncEncoder struct {
 }
 
 func init() {
-	registerHardwareFactory(newQuickSyncEncoder)
+	// Keep the legacy build-tag entry point disabled until the real oneVPL
+	// implementation is compiled in. The old backend was a byte passthrough
+	// placeholder and must never be advertised as a hardware encoder.
 }
 
 func newQuickSyncEncoder(cfg EncoderConfig) (encoderBackend, error) {
-	if cfg.Codec != CodecH264 && cfg.Codec != CodecVP9 && cfg.Codec != CodecAV1 {
-		return nil, fmt.Errorf("quicksync unsupported codec: %s", cfg.Codec)
-	}
-	return &quicksyncEncoder{cfg: cfg}, nil
+	return nil, fmt.Errorf("oneVPL/QSV backend is not available in this build")
 }
 
 func (q *quicksyncEncoder) Encode(frame []byte) ([]byte, error) {

@@ -467,11 +467,26 @@ func (m *mftEncoder) findEncoder(width, height int) (uintptr, bool, error) {
 	// provides deterministic 1-in-1-out encoding. The Windows software MFT
 	// stalls for 20-60 frames on Server editions and is not officially
 	// supported (Microsoft docs: "Minimum supported server: None supported").
+	// Do not pass the media types to MFTEnumEx on the first attempt. Several
+	// Intel driver versions advertise the H264 encoder without publishing the
+	// exact NV12 input type until after activation. Supplying the type filter
+	// makes MFTEnumEx report zero candidates even though the hardware encoder
+	// exists. Media-type negotiation below remains authoritative and rejects
+	// candidates that cannot actually encode this stream.
 	transform, err := m.enumAndActivate(
 		mftEnumFlagHardware|mftEnumFlagSortAndFilter,
-		&inputType, &outputType,
+		nil, nil,
 	)
+	if err != nil {
+		// Keep the typed query as a compatibility fallback for drivers that only
+		// expose their encoder through the subtype-filtered enumeration path.
+		transform, err = m.enumAndActivate(
+			mftEnumFlagHardware|mftEnumFlagSortAndFilter,
+			&inputType, &outputType,
+		)
+	}
 	if err == nil {
+		slog.Info("Hardware MFT candidate activated", "width", width, "height", height)
 		return transform, true, nil
 	}
 
