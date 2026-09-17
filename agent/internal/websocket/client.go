@@ -1033,9 +1033,24 @@ func (c *Client) SendPatchProgress(commandID string, event any) error {
 // SendUpdateStatus notifies the server that a self-update is about to start.
 // Non-blocking: drops if send channel is full.
 func (c *Client) SendUpdateStatus(targetVersion string) error {
+	return c.sendUpdateStatus(targetVersion, "")
+}
+
+// SendUpdateFailed tells the control plane that an announced update did not
+// reach the restart/swap stage. Keeping this distinct from a reconnect matters:
+// a live agent must not remain stuck in the dashboard's "updating" state after
+// a failed download or staging error.
+func (c *Client) SendUpdateFailed(targetVersion string) error {
+	return c.sendUpdateStatus(targetVersion, "failed")
+}
+
+func (c *Client) sendUpdateStatus(targetVersion, state string) error {
 	msg := map[string]any{
 		"type":          "update_status",
 		"targetVersion": targetVersion,
+	}
+	if state != "" {
+		msg["state"] = state
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

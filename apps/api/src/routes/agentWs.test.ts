@@ -1263,6 +1263,21 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
       and(eq(devices.agentId, 'agent-123'), TERMINAL_GUARD)
     );
   });
+
+  it('restores a live device online when an announced update fails', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+    const { whereMock, setMock } = rigStatusUpdateCapture();
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'update_status', targetVersion: '1.2.3', state: 'failed' }),
+    } as any, wsMock() as any);
+
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'online' }));
+    expect(whereMock).toHaveBeenCalledWith(
+      and(eq(devices.agentId, 'agent-123'), TERMINAL_GUARD)
+    );
+  });
 });
 
 describe('agent websocket command results', () => {

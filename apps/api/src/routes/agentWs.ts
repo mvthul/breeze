@@ -2803,7 +2803,9 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           return;
         }
 
-        // Handle update_status messages: agent is about to self-update
+        // Handle update_status messages. A failure comes only after an earlier
+        // announcement: the agent is still connected, so restore its usable
+        // state instead of leaving Remote Tools blocked on "updating".
         if (message.type === 'update_status' && typeof message.targetVersion === 'string') {
           if (agentDb) {
             await runWithAgentDbAccess('agentWs.updateStatus', async () => {
@@ -2814,7 +2816,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 await db
                   .update(devices)
                   .set({
-                    status: 'updating',
+                    status: message.state === 'failed' ? 'online' : 'updating',
                     lastSeenAt: new Date(),
                     updatedAt: new Date()
                   })
@@ -2822,9 +2824,13 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                     eq(devices.agentId, agentId),
                     notInArray(devices.status, [...TERMINAL_DEVICE_STATUSES])
                   ));
-                console.log(`[AgentWs] Agent ${agentId} entering update to ${message.targetVersion}`);
+                console.log(
+                  message.state === 'failed'
+                    ? `[AgentWs] Agent ${agentId} update to ${message.targetVersion} failed; restored online status`
+                    : `[AgentWs] Agent ${agentId} entering update to ${message.targetVersion}`
+                );
               } catch (error) {
-                console.error(`[AgentWs] Failed to set updating status for ${agentId}:`, error);
+                console.error(`[AgentWs] Failed to update status for ${agentId}:`, error);
               }
             });
           }

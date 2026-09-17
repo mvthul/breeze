@@ -1584,6 +1584,19 @@ func (h *Heartbeat) sendUpdateStatus(targetVersion string) {
 	}
 }
 
+// sendUpdateFailure clears the transient updating state after an update that
+// was announced to the server fails before the agent restarts.
+func (h *Heartbeat) sendUpdateFailure(targetVersion string) {
+	if h.wsClient == nil {
+		log.Error("cannot send failed update_status: no WS client", "targetVersion", targetVersion)
+		return
+	}
+	if err := h.wsClient.SendUpdateFailed(targetVersion); err != nil {
+		log.Error("failed to send failed update_status; device may remain updating until its next heartbeat",
+			"targetVersion", targetVersion, "error", err.Error())
+	}
+}
+
 // setDesktopTarget records the explicitly targeted Windows session ("" for
 // untargeted/legacy connects) for a remote desktop session id, so the stop
 // path can later route the banner-hide/end-of-session notify to the same
@@ -7344,13 +7357,6 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 
 	log.Info("upgrade requested", "targetVersion", targetVersion)
 
-	h.sendUpdateStatus(targetVersion)
-	// Give the WebSocket write goroutine time to flush the update_status
-	// message to the server before the binary is replaced and the process
-	// is restarted (e.g. via launchctl kickstart). Without this, the device
-	// may appear "Offline" instead of "Updating" in the dashboard.
-	time.Sleep(500 * time.Millisecond)
-
 	binaryPath, err := os.Executable()
 	if err != nil {
 		log.Error("failed to get executable path", "error", err.Error())
@@ -7420,7 +7426,15 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	}
 
 	u := updater.New(updaterCfg)
+	// All preflight work succeeded. From here an update is genuinely about to
+	// swap the running binary, so it is safe to expose the transient updating
+	// state. Earlier failures must leave a live agent available to Remote Tools.
+	h.sendUpdateStatus(targetVersion)
+	// Give the WebSocket write goroutine time to flush the update_status message
+	// before the binary is replaced and the process is restarted.
+	time.Sleep(500 * time.Millisecond)
 	if err := u.UpdateToWithOptions(targetVersion, updater.UpdateOptions{UserHelper: userHelperPair, Backup: backupPair}); err != nil {
+		h.sendUpdateFailure(targetVersion)
 		// If the filesystem is read-only, stop retrying — this is permanent
 		// until the service unit is fixed or the filesystem is remounted.
 		// Intentionally NOT persisted to disk (unlike dev_push in handlers_devupdate.go)

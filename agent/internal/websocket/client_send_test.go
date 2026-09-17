@@ -359,6 +359,27 @@ func TestSendTerminalOutput_Base64WhenCapabilityEnabled(t *testing.T) {
 	}
 }
 
+func TestSendUpdateFailedCarriesFailureState(t *testing.T) {
+	c := newTestClient("http://localhost", noopHandler)
+
+	if err := c.SendUpdateFailed("1.2.3"); err != nil {
+		t.Fatalf("SendUpdateFailed error: %v", err)
+	}
+
+	select {
+	case data := <-c.sendChan:
+		var parsed map[string]any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("unmarshal update status: %v", err)
+		}
+		if parsed["type"] != "update_status" || parsed["targetVersion"] != "1.2.3" || parsed["state"] != "failed" {
+			t.Fatalf("unexpected failed update status: %#v", parsed)
+		}
+	default:
+		t.Fatal("expected failed update status in sendChan")
+	}
+}
+
 func TestSendTerminalOutput_ClientStopped(t *testing.T) {
 	c := newTestClient("http://localhost", noopHandler)
 	// Fill the send channel so the select can only choose the done case

@@ -337,6 +337,7 @@ func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, 
 		// future dev-push surface needs to swap a companion binary too, pass
 		// updater.UpdateOptions{UserHelper: ...} here.
 		if err := u.UpdateFromURL(downloadURL, checksum, updater.UpdateOptions{}); err != nil {
+			h.sendUpdateFailure(version)
 			// See updater.SafeDownloadErrorFields: this must not log
 			// err.Error() directly. net/http wraps EVERY transport-level
 			// failure — not just a policy rejection — in a *url.Error that
