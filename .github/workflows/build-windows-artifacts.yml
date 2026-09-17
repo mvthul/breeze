@@ -80,7 +80,10 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ''
         run: |
-          Set-Content -Path tauri-test-config.json -Value '{"bundle":{"createUpdaterArtifacts":false}}'
+          # Match the self-hosted release version advertised by the test API.
+          # Otherwise the agent immediately replaces this diagnostic helper
+          # with the older 0.113.0 package after the next heartbeat.
+          Set-Content -Path tauri-test-config.json -Value '{"version":"0.113.0","bundle":{"createUpdaterArtifacts":false}}'
           pnpm tauri build --target x86_64-pc-windows-msvc --config tauri-test-config.json
 
       - name: Upload Helper MSI
