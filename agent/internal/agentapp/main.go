@@ -1857,12 +1857,24 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	// macOS/Linux.
 	detachHelperConsole()
 
-	// Log to file in the same logs folder as the main agent (e.g.
-	// C:\ProgramData\Breeze\logs) — except on macOS, where these helpers
-	// run as the logged-in user and the shared directory is root-owned
-	// 0700 and re-hardened on every agent log open/rotation. There they
-	// get ~/Library/Logs/Breeze instead (#5877).
+	// Log to the main agent's protected folder by default. Interactive helpers
+	// use their own profile-owned directory where the shared service directory
+	// is intentionally inaccessible (macOS and Windows).
 	logDir, homeErr := config.HelperLogDir()
+	// A Windows user-role helper runs with the interactive user's restricted
+	// token. ProgramData\Breeze\logs is deliberately SYSTEM/admin-only, so it
+	// must not be used for that process: it would silently fall back to the
+	// CREATE_NO_WINDOW stdout handle and lose the capture diagnostics we need
+	// when a user-desktop session fails. Keep system-role diagnostics in the
+	// protected shared log, but give the user helper its own profile-owned log.
+	if runtime.GOOS == "windows" && role == ipc.HelperRoleUser {
+		if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
+			logDir = filepath.Join(cacheDir, "Breeze", "logs")
+			homeErr = nil
+		} else if err != nil {
+			homeErr = err
+		}
+	}
 	mkdirErr := os.MkdirAll(logDir, 0700)
 	logFileName := "user-helper.log"
 	if binaryKind == ipc.HelperBinaryDesktopHelper {
