@@ -159,6 +159,16 @@ export const ANSWER_POLL_INITIAL_INTERVAL_MS = 50;
 export const ANSWER_POLL_MAX_INTERVAL_MS = 500;
 const ANSWER_POLL_BACKOFF_FACTOR = 1.5;
 
+/**
+ * Default window for the agent to process our WebRTC offer and post its answer.
+ *
+ * The agent's consent gate may prompt the end user for up to 30s before
+ * admitting the session, so this window must comfortably exceed the prompt
+ * timeout (issue #3209). An agent that refuses or crashes fails the session
+ * record immediately, so an unviable session still exits fast.
+ */
+export const DEFAULT_ANSWER_POLL_TIMEOUT_MS = 45000;
+
 /** Next answer-poll delay, geometric up to the cap. */
 export function nextAnswerPollInterval(currentMs: number): number {
   return Math.min(
@@ -359,7 +369,7 @@ export async function createWebRTCSession(
     }
 
     // Poll for the answer (agent processes offer and returns SDP answer)
-    const answerSdp = await pollForAnswer(params, 15000);
+    const answerSdp = await pollForAnswer(params, DEFAULT_ANSWER_POLL_TIMEOUT_MS);
 
     await pc.setRemoteDescription(
       new RTCSessionDescription({ type: 'answer', sdp: answerSdp }),
