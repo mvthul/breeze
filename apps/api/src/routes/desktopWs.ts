@@ -1711,7 +1711,7 @@ export function createDesktopWsRoutes(
 
       // The viewer-token route is the normal desktop path. Preserve the
       // capture machine's hybrid-GPU hint here as well as on the REST offer
-      // route so the agent can prefer Intel Quick Sync on Intel+NVIDIA hosts.
+      // route so the agent can prefer direct NVENC on Intel+NVIDIA hosts.
       let gpuVendor: string | undefined;
       try {
         const [hw] = await withSystemDbAccessContext(() => db.select({ gpuModel: deviceHardware.gpuModel })
@@ -1720,10 +1720,10 @@ export function createDesktopWsRoutes(
           .limit(1));
         if (hw?.gpuModel) {
           const gpuModel = hw.gpuModel.toLowerCase();
-          if (gpuModel.includes('intel') || gpuModel.includes('uhd') || gpuModel.includes('iris')) {
-            gpuVendor = 'intel';
-          } else if (gpuModel.includes('nvidia') || gpuModel.includes('geforce') || gpuModel.includes('quadro') || gpuModel.includes('rtx')) {
+          if (gpuModel.includes('nvidia') || gpuModel.includes('geforce') || gpuModel.includes('quadro') || gpuModel.includes('rtx')) {
             gpuVendor = 'nvidia';
+          } else if (gpuModel.includes('intel') || gpuModel.includes('uhd') || gpuModel.includes('iris')) {
+            gpuVendor = 'intel';
           } else if (gpuModel.includes('radeon') || gpuModel.includes('amd')) {
             gpuVendor = 'amd';
           }

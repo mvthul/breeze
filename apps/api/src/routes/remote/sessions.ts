@@ -974,14 +974,14 @@ sessionRoutes.post(
         .limit(1));
       if (hw?.gpuModel) {
         const g = hw.gpuModel.toLowerCase();
-        // Prefer Intel on hybrid systems for the QuickSync fallback. The
-        // inventory string may contain both the Intel iGPU and an NVIDIA dGPU;
-        // choosing NVIDIA first prevents the agent from reaching the generic
-        // Intel/MFT path when direct NVENC rejects an ultrawide resolution.
-        if (g.includes('intel') || g.includes('uhd') || g.includes('iris')) {
-          gpuVendor = 'intel';
-        } else if (g.includes('nvidia') || g.includes('geforce') || g.includes('quadro') || g.includes('rtx')) {
+        // Prefer the discrete NVIDIA encoder on hybrid systems. The current
+        // Windows agent has a direct NVENC backend, while Intel oneVPL is
+        // still experimental. Selecting Intel first would choose the generic
+        // MFT factory and hide a usable NVENC path behind its late probe.
+        if (g.includes('nvidia') || g.includes('geforce') || g.includes('quadro') || g.includes('rtx')) {
           gpuVendor = 'nvidia';
+        } else if (g.includes('intel') || g.includes('uhd') || g.includes('iris')) {
+          gpuVendor = 'intel';
         } else if (g.includes('radeon') || g.includes('amd')) {
           gpuVendor = 'amd';
         }
