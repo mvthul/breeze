@@ -107,6 +107,13 @@ func newMFTEncoder(cfg EncoderConfig) (encoderBackend, error) {
 	if cfg.Codec != CodecH264 {
 		return nil, fmt.Errorf("MFT encoder only supports H264, got %s", cfg.Codec)
 	}
+	if cfg.GPUVendor == "intel" {
+		if err := probeOneVPLRuntime(); err == nil {
+			slog.Info("Intel oneVPL runtime detected; dedicated QSV backend is not enabled yet")
+		} else {
+			slog.Debug("Intel oneVPL runtime unavailable; continuing with Media Foundation fallback", "error", err.Error())
+		}
+	}
 	// Probe for hardware MFTs at creation time so the factory fails fast
 	// when no GPU encoder is available. This lets newBackend() fall through
 	// to OpenH264 instead of returning a struct that fails lazily on Encode().
