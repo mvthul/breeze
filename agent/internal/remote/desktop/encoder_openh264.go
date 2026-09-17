@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"runtime"
 	"sync"
 	"time"
@@ -34,6 +35,21 @@ var (
 	openH264Loaded  bool
 	openH264LoadErr error
 )
+
+const maxOpenH264Pixels = 9_437_184
+
+func clampOpenH264Dimensions(width, height int) (int, int) {
+	width, height = AlignEven(width, height)
+	if width <= 0 || height <= 0 || width*height <= maxOpenH264Pixels {
+		return width, height
+	}
+	// Preserve the display aspect ratio while staying below OpenH264's
+	// documented dependency-layer pixel ceiling. AlignEven keeps 4:2:0 input
+	// valid after the scale.
+	scale := (float64(maxOpenH264Pixels) / float64(width*height))
+	scale = math.Sqrt(scale)
+	return AlignEven(int(float64(width)*scale), int(float64(height)*scale))
+}
 
 // PreloadOpenH264 eagerly loads the OpenH264 library (downloading if needed).
 // Call during agent startup so the DLL is ready before any desktop sessions.
@@ -305,6 +321,12 @@ func (e *openH264Encoder) Encode(frame []byte) ([]byte, error) {
 	return out, nil
 }
 
+func (e *openH264Encoder) Dimensions() (int, int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.width, e.height
+}
+
 func (e *openH264Encoder) ForceKeyframe() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -349,8 +371,7 @@ func (e *openH264Encoder) SetFPS(fps int) error {
 
 func (e *openH264Encoder) SetDimensions(width, height int) error {
 	// H264 requires even dimensions for 4:2:0 chroma subsampling
-	width = width &^ 1
-	height = height &^ 1
+	width, height = clampOpenH264Dimensions(width, height)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.width == width && e.height == height {

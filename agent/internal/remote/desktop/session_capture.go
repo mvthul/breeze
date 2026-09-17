@@ -904,9 +904,28 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		s.cursor.CompositeCursor(img)
 	}
 
-	// 4. Encode to H264 via MFT (RGBA→NV12→H264 internally)
+	// 4. Encode to H264 via MFT (RGBA→NV12→H264 internally). A software
+	// encoder may clamp dimensions below the display size; resize the captured
+	// frame to the backend's accepted dimensions before encoding. Hardware
+	// encoders keep the native display dimensions and take the fast path.
+	encodeImg := img
+	if targetW, targetH := enc.Dimensions(); targetW > 0 && targetH > 0 &&
+		(targetW != img.Rect.Dx() || targetH != img.Rect.Dy()) {
+		encodeImg = ResizeRGBAFrame(img, targetW, targetH)
+		if encodeImg == nil {
+			slog.Warn("failed to resize frame for encoder", "session", s.id,
+				"source", fmt.Sprintf("%dx%d", img.Rect.Dx(), img.Rect.Dy()),
+				"target", fmt.Sprintf("%dx%d", targetW, targetH))
+			captureImagePool.Put(img)
+			return
+		}
+		slog.Debug("resized frame for encoder dimensions",
+			"session", s.id,
+			"source", fmt.Sprintf("%dx%d", img.Rect.Dx(), img.Rect.Dy()),
+			"target", fmt.Sprintf("%dx%d", targetW, targetH))
+	}
 	t1 := time.Now()
-	h264Data, err := enc.Encode(img.Pix)
+	h264Data, err := enc.Encode(encodeImg.Pix)
 	encodeTime := time.Since(t1)
 	captureImagePool.Put(img)
 

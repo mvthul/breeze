@@ -63,9 +63,11 @@ func DefaultEncoderConfig() EncoderConfig {
 }
 
 type VideoEncoder struct {
-	mu      sync.Mutex
-	cfg     EncoderConfig
-	backend encoderBackend
+	mu              sync.Mutex
+	cfg             EncoderConfig
+	backend         encoderBackend
+	cfgWidth        int
+	cfgHeight       int
 }
 
 // optionalKeyframeForcer is implemented by encoder backends that can force the
@@ -247,7 +249,25 @@ func (v *VideoEncoder) SetFPS(fps int) error {
 func (v *VideoEncoder) SetDimensions(width, height int) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	return v.backend.SetDimensions(width, height)
+	if err := v.backend.SetDimensions(width, height); err != nil {
+		return err
+	}
+	v.cfgWidth, v.cfgHeight = width, height
+	return nil
+}
+
+// Dimensions returns the dimensions accepted by the active backend. Software
+// backends may clamp the requested display size to their codec limits.
+func (v *VideoEncoder) Dimensions() (int, int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.backend == nil {
+		return 0, 0
+	}
+	if d, ok := v.backend.(interface{ Dimensions() (int, int) }); ok {
+		return d.Dimensions()
+	}
+	return v.cfgWidth, v.cfgHeight
 }
 
 func (v *VideoEncoder) SetPixelFormat(pf PixelFormat) {

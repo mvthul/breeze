@@ -1,6 +1,9 @@
 package desktop
 
-import "fmt"
+import (
+	"fmt"
+	"image"
+)
 
 // AlignEven rounds width and height down to the nearest even non-negative
 // integer. H264 (and VP9, AV1, and most other modern video codecs) require
@@ -47,4 +50,25 @@ func FitRGBAFrame(input []byte, w, h int) ([]byte, error) {
 		return nil, fmt.Errorf("FitRGBAFrame: frame size %d doesn't match %dx%d (expected %d bytes)",
 			len(input), w, h, expected)
 	}
+}
+
+// ResizeRGBAFrame scales a captured frame with nearest-neighbour sampling.
+// It is used only when a software encoder has a lower maximum resolution than
+// the display (for example OpenH264's pixel ceiling). Keeping this here makes
+// the resize explicit and avoids feeding a full-resolution frame to an encoder
+// configured for a smaller image.
+func ResizeRGBAFrame(input *image.RGBA, width, height int) *image.RGBA {
+	if input == nil || width <= 0 || height <= 0 {
+		return nil
+	}
+	out := image.NewRGBA(image.Rect(0, 0, width, height))
+	src := input.Bounds()
+	for y := 0; y < height; y++ {
+		sy := src.Min.Y + y*src.Dy()/height
+		for x := 0; x < width; x++ {
+			sx := src.Min.X + x*src.Dx()/width
+			copy(out.Pix[out.PixOffset(x, y):out.PixOffset(x, y)+4], input.Pix[input.PixOffset(sx, sy):input.PixOffset(sx, sy)+4])
+		}
+	}
+	return out
 }
