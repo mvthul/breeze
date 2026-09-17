@@ -348,12 +348,10 @@ func (c *Client) authenticate() error {
 
 func (c *Client) sendCapabilities() error {
 	caps := detectCapabilities(c.binaryKind, c.context)
-	// On Windows, user-role helpers cannot capture desktop (no SYSTEM token
-	// for UAC/lock screen). On macOS, the user-role helper is the only process
-	// that CAN capture — the root daemon lacks GUI session access.
-	if c.role == ipc.HelperRoleUser && runtime.GOOS == "windows" {
-		caps.CanCapture = false
-	}
+	// On Windows the interactive user helper may capture its own
+	// kernel-verified WTS desktop. The broker chooses the SYSTEM helper for
+	// explicit secure/login desktop routes; forcing CanCapture=false here would
+	// make every normal session use SYSTEM and hide the active GPU encoder.
 	return c.conn.SendTyped("caps", ipc.TypeCapabilities, caps)
 }
 
