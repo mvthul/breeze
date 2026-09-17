@@ -50,6 +50,10 @@ type EncoderConfig struct {
 	FPS            int
 	PreferHardware bool
 	GPUVendor      string // "nvidia", "amd", "intel", or "" for auto-detect
+	// BackendPreference is a local diagnostic override. Empty and "auto" use
+	// the normal adapter-aware ordering; other values restrict hardware
+	// selection to one named backend. OpenH264 is handled by newBackend.
+	BackendPreference string // auto, mft, qsv, nvenc, amf, openh264
 	// CaptureAdapter is populated by DXGI capture when available. A vendor
 	// backend is eligible only when it owns this adapter; generic CPU/GPU
 	// upload backends remain eligible for mismatched adapters.
@@ -470,10 +474,18 @@ func validateConfig(cfg EncoderConfig) error {
 	if cfg.FPS <= 0 {
 		return ErrInvalidFPS
 	}
+	switch cfg.BackendPreference {
+	case "", "auto", "mft", "qsv", "nvenc", "amf", "openh264":
+	default:
+		return fmt.Errorf("unsupported encoder backend preference: %s", cfg.BackendPreference)
+	}
 	return nil
 }
 
 func newBackend(cfg EncoderConfig) (encoderBackend, error) {
+	if cfg.BackendPreference == "openh264" {
+		return newSoftwareEncoder(cfg)
+	}
 	if cfg.PreferHardware {
 		if backend := tryHardware(cfg); backend != nil {
 			slog.Info("Selected hardware H264 encoder",
@@ -509,6 +521,9 @@ func tryHardware(cfg EncoderConfig) encoderBackend {
 	// vendor-specific dGPU factory before it gets a chance to initialize.
 	if cfg.GPUVendor == "intel" {
 		for _, tf := range factories {
+			if !backendPreferenceMatches(cfg.BackendPreference, tf) {
+				continue
+			}
 			if tf.vendor == "" && hardwareFactoryEligible(tf.vendor, cfg.CaptureAdapter) {
 				backend, err := tf.factory(cfg)
 				if err == nil && backend != nil {
@@ -521,6 +536,9 @@ func tryHardware(cfg EncoderConfig) encoderBackend {
 	// First pass: try vendor-specific factories matching GPUVendor
 	if cfg.GPUVendor != "" {
 		for _, tf := range factories {
+			if !backendPreferenceMatches(cfg.BackendPreference, tf) {
+				continue
+			}
 			if tf.vendor == cfg.GPUVendor && hardwareFactoryEligible(tf.vendor, cfg.CaptureAdapter) {
 				backend, err := tf.factory(cfg)
 				if err == nil && backend != nil {
@@ -532,6 +550,9 @@ func tryHardware(cfg EncoderConfig) encoderBackend {
 
 	// Second pass: try all factories in registration order
 	for _, tf := range factories {
+		if !backendPreferenceMatches(cfg.BackendPreference, tf) {
+			continue
+		}
 		if !hardwareFactoryEligible(tf.vendor, cfg.CaptureAdapter) {
 			slog.Debug("Skipping hardware backend for different capture adapter",
 				"backendVendor", tf.vendor, "captureVendor", adapterVendor,
@@ -544,4 +565,22 @@ func tryHardware(cfg EncoderConfig) encoderBackend {
 		}
 	}
 	return nil
+}
+
+func backendPreferenceMatches(preference string, tf taggedFactory) bool {
+	if preference == "" || preference == "auto" {
+		return true
+	}
+	switch preference {
+	case "mft":
+		return tf.vendor == ""
+	case "qsv":
+		return tf.vendor == "intel"
+	case "nvenc":
+		return tf.vendor == "nvidia"
+	case "amf":
+		return tf.vendor == "amd"
+	default:
+		return false
+	}
 }
