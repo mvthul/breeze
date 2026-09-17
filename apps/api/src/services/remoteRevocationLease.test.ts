@@ -307,6 +307,23 @@ describe('evaluateRevocationRecheck', () => {
         reason: 'membership_removed',
       });
     });
+
+    it('revokes when partner role forces MFA and user is not MFA-protected', () => {
+      const r = partnerRow();
+      r.partnerMembership!.forceMfa = true;
+      r.user.mfaProtected = false;
+      expect(evaluateRevocationRecheck(r, NOW, NOW + 60_000)).toEqual({
+        ok: false,
+        reason: 'mfa_required',
+      });
+    });
+
+    it('keeps a forced-MFA partner role renewing when user is MFA-protected (e.g. via trusted IdP MFA)', () => {
+      const r = partnerRow();
+      r.partnerMembership!.forceMfa = true;
+      r.user.mfaProtected = true;
+      expect(evaluateRevocationRecheck(r, NOW, NOW + 60_000)).toEqual({ ok: true });
+    });
   });
 });
 
