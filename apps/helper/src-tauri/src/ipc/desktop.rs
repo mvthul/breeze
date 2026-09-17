@@ -119,9 +119,9 @@ pub fn clear_pending_banner() {
 }
 
 #[cfg(target_os = "windows")]
-fn apply_system_data_dir<R: tauri::Runtime>(
-    builder: WebviewWindowBuilder<R>,
-) -> WebviewWindowBuilder<R> {
+fn apply_system_data_dir<'a, R: tauri::Runtime, M: Manager<R>>(
+    builder: WebviewWindowBuilder<'a, R, M>,
+) -> WebviewWindowBuilder<'a, R, M> {
     let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
     if local.to_lowercase().contains("systemprofile") || local.is_empty() {
         let pd = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
