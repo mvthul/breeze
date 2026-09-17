@@ -3284,8 +3284,12 @@ func betterDesktopSession(candidate, current *Session) bool {
 	// can silently force an otherwise capable Intel/NVIDIA system to CPU encode.
 	// Keep the system helper eligible for login_window and other special desktop
 	// contexts where a user-role helper is deliberately not present.
-	if candidate.DesktopContext == ipc.DesktopContextUserSession &&
-		current.DesktopContext == ipc.DesktopContextUserSession {
+	// Windows helpers built before the explicit desktop-context capability
+	// report an empty context for the normal interactive desktop. Treat that
+	// equivalently to user_session here. The only context where SYSTEM must win
+	// this tie-breaker is an explicit login/secure desktop.
+	if candidate.DesktopContext != ipc.DesktopContextLoginWindow &&
+		current.DesktopContext != ipc.DesktopContextLoginWindow {
 		if candidate.HelperRole == ipc.HelperRoleUser && current.HelperRole != ipc.HelperRoleUser {
 			return true
 		}

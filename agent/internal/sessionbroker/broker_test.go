@@ -522,10 +522,12 @@ func TestPreferredDesktopSession_UserDesktopPrefersInteractiveRoleOverSystem(t *
 	// desktop. The SYSTEM helper may reconnect later, but it must not win the
 	// normal capture route: hardware MFTs are exposed to the user token.
 	userSession := &Session{
-		SessionID:      "interactive-user",
-		BinaryKind:     ipc.HelperBinaryUserHelper,
-		HelperRole:     ipc.HelperRoleUser,
-		DesktopContext: ipc.DesktopContextUserSession,
+		SessionID:  "interactive-user",
+		BinaryKind: ipc.HelperBinaryUserHelper,
+		HelperRole: ipc.HelperRoleUser,
+		// Existing Windows user-helper builds report the normal desktop as
+		// an empty context until the explicit capability is advertised.
+		DesktopContext: "",
 		Capabilities:   &ipc.Capabilities{CanCapture: true},
 		AllowedScopes:  []string{"desktop"},
 		ConnectedAt:    now.Add(-time.Minute),
@@ -535,7 +537,7 @@ func TestPreferredDesktopSession_UserDesktopPrefersInteractiveRoleOverSystem(t *
 		SessionID:      "system-user-session",
 		BinaryKind:     ipc.HelperBinaryUserHelper,
 		HelperRole:     ipc.HelperRoleSystem,
-		DesktopContext: ipc.DesktopContextUserSession,
+		DesktopContext: "",
 		Capabilities:   &ipc.Capabilities{CanCapture: true},
 		AllowedScopes:  []string{"desktop"},
 		ConnectedAt:    now,
