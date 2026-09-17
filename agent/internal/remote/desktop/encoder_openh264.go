@@ -36,7 +36,10 @@ var (
 	openH264LoadErr error
 )
 
-const maxOpenH264Pixels = 9_437_184
+// Keep a safety margin below OpenH264's dependency-layer ceiling. Some
+// OpenH264 builds reject dimensions close to the documented limit after their
+// internal layer alignment, which otherwise causes a black remote screen.
+const maxOpenH264Pixels = 9_000_000
 
 func clampOpenH264Dimensions(width, height int) (int, int) {
 	width, height = AlignEven(width, height)
@@ -131,6 +134,8 @@ func (e *openH264Encoder) initEncoder() error {
 	if e.width == 0 || e.height == 0 {
 		return fmt.Errorf("OpenH264: call SetDimensions before Encode")
 	}
+	e.width, e.height = clampOpenH264Dimensions(e.width, e.height)
+	slog.Info("OpenH264 encoder dimensions selected", "width", e.width, "height", e.height, "pixels", e.width*e.height)
 
 	var enc *openh264.ISVCEncoder
 	if ret := openh264.WelsCreateSVCEncoder(&enc); ret != 0 || enc == nil {
