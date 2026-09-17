@@ -59,6 +59,7 @@ const (
 	// DXGI/D3D11 COM vtable indices
 	dxgiDeviceGetAdapter       = 7   // IDXGIDevice (after IUnknown+IDXGIObject)
 	dxgiAdapterEnumOutputs     = 7   // IDXGIAdapter
+	dxgiAdapterGetDesc1        = 10  // IDXGIAdapter1::GetDesc1
 	dxgiOutput1DuplicateOutput = 22  // IDXGIOutput1
 	dxgiDuplGetDesc            = 7   // IDXGIOutputDuplication
 	dxgiDuplAcquireNextFrame   = 8   // IDXGIOutputDuplication
@@ -75,6 +76,7 @@ const (
 // COM GUIDs for DXGI interfaces
 var (
 	iidIDXGIDevice     = comGUID{0x54ec77fa, 0x1377, 0x44e6, [8]byte{0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c}}
+	iidIDXGIAdapter1   = comGUID{0x29038f61, 0x3839, 0x4626, [8]byte{0x91, 0xfd, 0x08, 0x68, 0x79, 0x01, 0x1a, 0x05}}
 	iidID3D11Texture2D = comGUID{0x6f15aaf2, 0xd208, 0x4e89, [8]byte{0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c}}
 	iidIDXGIOutput1    = comGUID{0x00cddea8, 0x939b, 0x4b83, [8]byte{0xa3, 0x40, 0xa6, 0x85, 0x22, 0x66, 0x66, 0xcc}}
 )
@@ -104,6 +106,21 @@ type d3d11MappedSubresource struct {
 type dxgiRational struct {
 	Numerator   uint32
 	Denominator uint32
+}
+
+// dxgiAdapterDesc1 matches DXGI_ADAPTER_DESC1.
+type dxgiAdapterDesc1 struct {
+	Description           [128]uint16
+	VendorID              uint32
+	DeviceID              uint32
+	SubSysID              uint32
+	Revision              uint32
+	DedicatedVideoMemory  uint64
+	DedicatedSystemMemory uint64
+	SharedSystemMemory    uint64
+	LUIDLow               uint32
+	LUIDHigh              int32
+	Flags                 uint32
 }
 
 // dxgiModeDesc matches DXGI_MODE_DESC.
@@ -156,6 +173,7 @@ type dxgiCapturer struct {
 	// D3D11/DXGI COM objects
 	device      uintptr // ID3D11Device
 	context     uintptr // ID3D11DeviceContext
+	adapterInfo AdapterIdentity
 	duplication uintptr // IDXGIOutputDuplication
 	staging     uintptr // ID3D11Texture2D (staging, CPU-readable)
 	gpuTexture  uintptr // ID3D11Texture2D (DEFAULT usage, RENDER_TARGET bind, for GPU pipeline)
@@ -302,6 +320,35 @@ func (c *dxgiCapturer) initDXGI() error {
 		return fmt.Errorf("IDXGIDevice::GetAdapter: %w", err)
 	}
 	defer comRelease(adapter)
+
+	// Capture and encode must use the same physical adapter on hybrid systems.
+	// GetDesc1 supplies both the vendor and the stable adapter LUID. Query the
+	// v1 interface first: IDXGIAdapter itself does not have a vtable slot 10.
+	var adapter1 uintptr
+	_, adapterErr := comCall(adapter, vtblQueryInterface,
+		uintptr(unsafe.Pointer(&iidIDXGIAdapter1)), uintptr(unsafe.Pointer(&adapter1)))
+	var adapterDesc dxgiAdapterDesc1
+	var hrDesc uintptr
+	if adapterErr == nil {
+		defer comRelease(adapter1)
+		hrDesc, _, _ = syscall.SyscallN(comVtblFn(adapter1, dxgiAdapterGetDesc1), adapter1,
+			uintptr(unsafe.Pointer(&adapterDesc)))
+	} else {
+		hrDesc = 0x80004002 // E_NOINTERFACE
+	}
+	if int32(hrDesc) >= 0 {
+		c.adapterInfo = AdapterIdentity{
+			VendorID: adapterDesc.VendorID,
+			DeviceID: adapterDesc.DeviceID,
+			LUID:     uint64(adapterDesc.LUIDLow) | uint64(uint32(adapterDesc.LUIDHigh))<<32,
+			Name:     syscall.UTF16ToString(adapterDesc.Description[:]),
+		}
+		slog.Info("DXGI capture adapter selected", "name", c.adapterInfo.Name,
+			"vendor", c.adapterInfo.Vendor(), "vendorId", fmt.Sprintf("0x%04x", c.adapterInfo.VendorID),
+			"deviceId", fmt.Sprintf("0x%04x", c.adapterInfo.DeviceID), "luid", c.adapterInfo.LUID)
+	} else {
+		slog.Warn("IDXGIAdapter1::GetDesc1 failed", "hr", fmt.Sprintf("0x%08x", uint32(hrDesc)))
+	}
 
 	// EnumOutputs
 	var output uintptr

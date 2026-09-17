@@ -604,4 +604,10 @@ func (c *dxgiCapturer) GetD3D11Context() uintptr {
 	return c.context
 }
 
+func (c *dxgiCapturer) GetAdapterIdentity() AdapterIdentity {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.adapterInfo
+}
+
 var _ lastCaptureErrorReporter = (*dxgiCapturer)(nil)

@@ -50,6 +50,10 @@ type EncoderConfig struct {
 	FPS            int
 	PreferHardware bool
 	GPUVendor      string // "nvidia", "amd", "intel", or "" for auto-detect
+	// CaptureAdapter is populated by DXGI capture when available. A vendor
+	// backend is eligible only when it owns this adapter; generic CPU/GPU
+	// upload backends remain eligible for mismatched adapters.
+	CaptureAdapter *AdapterIdentity
 }
 
 func DefaultEncoderConfig() EncoderConfig {
@@ -63,11 +67,11 @@ func DefaultEncoderConfig() EncoderConfig {
 }
 
 type VideoEncoder struct {
-	mu              sync.Mutex
-	cfg             EncoderConfig
-	backend         encoderBackend
-	cfgWidth        int
-	cfgHeight       int
+	mu        sync.Mutex
+	cfg       EncoderConfig
+	backend   encoderBackend
+	cfgWidth  int
+	cfgHeight int
 }
 
 // optionalKeyframeForcer is implemented by encoder backends that can force the
@@ -155,6 +159,13 @@ func registerHardwareFactoryForVendor(vendor string, factory backendFactory) {
 	hardwareFactoriesMu.Lock()
 	defer hardwareFactoriesMu.Unlock()
 	hardwareFactories = append(hardwareFactories, taggedFactory{vendor: vendor, factory: factory})
+}
+
+func hardwareFactoryEligible(vendor string, capture *AdapterIdentity) bool {
+	if vendor == "" || capture == nil {
+		return true
+	}
+	return vendor == capture.Vendor()
 }
 
 func NewVideoEncoder(cfg EncoderConfig) (*VideoEncoder, error) {
@@ -487,13 +498,18 @@ func tryHardware(cfg EncoderConfig) encoderBackend {
 	factories := append([]taggedFactory(nil), hardwareFactories...)
 	hardwareFactoriesMu.Unlock()
 
+	adapterVendor := ""
+	if cfg.CaptureAdapter != nil {
+		adapterVendor = cfg.CaptureAdapter.Vendor()
+	}
+
 	// On hybrid Windows systems the Intel iGPU is often the intended
 	// QuickSync target even when an NVIDIA dGPU is also present. The generic
 	// MFT factory is the Windows QuickSync path; avoid selecting a direct
 	// vendor-specific dGPU factory before it gets a chance to initialize.
 	if cfg.GPUVendor == "intel" {
 		for _, tf := range factories {
-			if tf.vendor == "" {
+			if tf.vendor == "" && hardwareFactoryEligible(tf.vendor, cfg.CaptureAdapter) {
 				backend, err := tf.factory(cfg)
 				if err == nil && backend != nil {
 					return backend
@@ -505,7 +521,7 @@ func tryHardware(cfg EncoderConfig) encoderBackend {
 	// First pass: try vendor-specific factories matching GPUVendor
 	if cfg.GPUVendor != "" {
 		for _, tf := range factories {
-			if tf.vendor == cfg.GPUVendor {
+			if tf.vendor == cfg.GPUVendor && hardwareFactoryEligible(tf.vendor, cfg.CaptureAdapter) {
 				backend, err := tf.factory(cfg)
 				if err == nil && backend != nil {
 					return backend
@@ -516,6 +532,12 @@ func tryHardware(cfg EncoderConfig) encoderBackend {
 
 	// Second pass: try all factories in registration order
 	for _, tf := range factories {
+		if !hardwareFactoryEligible(tf.vendor, cfg.CaptureAdapter) {
+			slog.Debug("Skipping hardware backend for different capture adapter",
+				"backendVendor", tf.vendor, "captureVendor", adapterVendor,
+				"captureAdapterLuid", cfg.CaptureAdapter.LUID)
+			continue
+		}
 		backend, err := tf.factory(cfg)
 		if err == nil && backend != nil {
 			return backend

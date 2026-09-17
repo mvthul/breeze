@@ -305,6 +305,15 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			"session", sessionID, "desktop", deskName)
 		preferHardware = false
 	}
+	var captureAdapter *AdapterIdentity
+	if provider, ok := capturer.(AdapterIdentityProvider); ok {
+		identity := provider.GetAdapterIdentity()
+		if identity.Vendor() != "" || identity.LUID != 0 {
+			captureAdapter = &identity
+			slog.Info("StartSession: capture adapter identified", "session", sessionID,
+				"vendor", identity.Vendor(), "name", identity.Name, "luid", identity.LUID)
+		}
+	}
 
 	// Create H264 encoder via factory (will use MFT on Windows).
 	// Always configure the encoder for maxFrameRate so hardware MFT rate control
@@ -317,6 +326,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		FPS:            maxFrameRate,
 		PreferHardware: preferHardware,
 		GPUVendor:      m.gpuVendor,
+		CaptureAdapter: captureAdapter,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create H264 encoder: %w", err)

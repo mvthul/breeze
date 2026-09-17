@@ -111,6 +111,35 @@ type TextureProvider interface {
 	GetD3D11Context() uintptr
 }
 
+// AdapterIdentity describes the physical graphics adapter that owns a capture
+// device. LUID is stable for the lifetime of a Windows adapter and is the
+// authoritative match key when more than one GPU is present.
+type AdapterIdentity struct {
+	VendorID uint32
+	DeviceID uint32
+	LUID     uint64
+	Name     string
+}
+
+func (a AdapterIdentity) Vendor() string {
+	switch a.VendorID {
+	case 0x10de:
+		return "nvidia"
+	case 0x8086:
+		return "intel"
+	case 0x1002:
+		return "amd"
+	default:
+		return ""
+	}
+}
+
+// AdapterIdentityProvider is optional so non-DXGI capturers and existing
+// platform implementations remain source-compatible.
+type AdapterIdentityProvider interface {
+	GetAdapterIdentity() AdapterIdentity
+}
+
 // NOTE: a DirtyRectProvider interface (DirtyRects() []image.Rectangle) used to
 // live here, but nothing ever consumed it and the DXGI capturer paid a per-frame
 // COM call + allocations to populate it. Removed until region-based encoding
