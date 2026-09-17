@@ -63,6 +63,22 @@ func TestSanitizeCapabilitiesForSessionScopes(t *testing.T) {
 	}
 }
 
+func TestUserHelperScopesAllowDesktopCapture(t *testing.T) {
+	t.Parallel()
+
+	// The interactive helper is kernel-bound to its logged-in WTS session. It
+	// needs capture permission for the normal desktop so the broker can select
+	// the matching user/GPU rather than falling back to SYSTEM CPU capture.
+	session := &Session{AllowedScopes: userHelperScopes}
+	caps := sanitizeCapabilitiesForSession(session, &ipc.Capabilities{CanCapture: true})
+	if !caps.CanCapture {
+		t.Fatal("interactive user helper capture capability was stripped")
+	}
+	if containsString(userHelperScopes, ipc.ScopePam) {
+		t.Fatal("interactive user helper must not receive PAM scope")
+	}
+}
+
 func TestSanitizeTCCStatusForSessionScopes(t *testing.T) {
 	t.Parallel()
 

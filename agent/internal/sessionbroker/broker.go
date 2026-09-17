@@ -207,11 +207,14 @@ func (b *Broker) maybeStartKeepalive(session *Session, role ipc.HelperRole) {
 	}
 }
 
-// Role-based scopes: SYSTEM helpers own desktop capture and secure-desktop PAM
-// dialogs; user-token helpers own script execution.
+// Role-based scopes: both helpers may capture their own eligible desktop. The
+// interactive user helper owns the regular user desktop (and its hardware
+// encoder), while the SYSTEM helper remains available for secure desktop/UAC
+// and owns PAM. The broker binds each helper to its kernel-verified WTS session
+// before granting these scopes.
 var (
 	systemHelperScopes = []string{"notify", "tray", "clipboard", "desktop", ipc.ScopePam}
-	userHelperScopes   = []string{"notify", "clipboard", "run_as_user"}
+	userHelperScopes   = []string{"notify", "clipboard", "run_as_user", "desktop"}
 	// macDesktopHelperScopes is the narrowed grant for the macOS desktop
 	// helper: it is not the full user helper, but it does need "notify" so the
 	// cross-platform reboot warning ladder can reach a logged-in macOS user
