@@ -317,8 +317,12 @@ export async function createWebRTCSession(
   try {
     // Wire incoming video track to the <video> element
     pc.ontrack = (event) => {
-      if (event.track.kind === 'video' && event.streams[0]) {
-        videoEl.srcObject = event.streams[0];
+      if (event.track.kind === 'video') {
+        // Pion may publish a track without associating it with a MediaStream.
+        // In that case RTCTrackEvent.streams is empty even though the track is
+        // valid and media is flowing. Attach a stream synthesized from the
+        // track so WebView2 does not stay black with a connected peer and 0 FPS.
+        videoEl.srcObject = event.streams[0] ?? new MediaStream([event.track]);
 
         // Minimize jitter buffer for low-latency screen sharing.
         // Chrome 109+ / Firefox 120+ support jitterBufferTarget on RTCRtpReceiver.
