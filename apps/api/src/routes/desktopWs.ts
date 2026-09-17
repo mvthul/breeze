@@ -5,7 +5,7 @@ import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import { remoteSessions, devices, users } from '../db/schema';
+import { remoteSessions, devices, users, deviceHardware } from '../db/schema';
 import {
   createViewerAccessToken,
   verifyViewerAccessToken,
@@ -1709,6 +1709,29 @@ export function createDesktopWsRoutes(
         }, 409);
       }
 
+      // The viewer-token route is the normal desktop path. Preserve the
+      // capture machine's hybrid-GPU hint here as well as on the REST offer
+      // route so the agent can prefer Intel Quick Sync on Intel+NVIDIA hosts.
+      let gpuVendor: string | undefined;
+      try {
+        const [hw] = await db.select({ gpuModel: deviceHardware.gpuModel })
+          .from(deviceHardware)
+          .where(eq(deviceHardware.deviceId, access.device.id))
+          .limit(1);
+        if (hw?.gpuModel) {
+          const gpuModel = hw.gpuModel.toLowerCase();
+          if (gpuModel.includes('intel') || gpuModel.includes('uhd') || gpuModel.includes('iris')) {
+            gpuVendor = 'intel';
+          } else if (gpuModel.includes('nvidia') || gpuModel.includes('geforce') || gpuModel.includes('quadro') || gpuModel.includes('rtx')) {
+            gpuVendor = 'nvidia';
+          } else if (gpuModel.includes('radeon') || gpuModel.includes('amd')) {
+            gpuVendor = 'amd';
+          }
+        }
+      } catch {
+        // GPU inventory is advisory; the agent can still auto-detect.
+      }
+
       const agentReachable = sendCommandToAgent(access.device.agentId, {
         id: startCommandId,
         type: 'start_desktop',
@@ -1727,6 +1750,7 @@ export function createDesktopWsRoutes(
           revocationLease: offerLease.lease,
           ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}),
           ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}),
+          ...(gpuVendor ? { gpuVendor } : {}),
           ...(prompt ? { prompt } : {})
         }
       });
