@@ -3276,6 +3276,23 @@ func betterDesktopSession(candidate, current *Session) bool {
 	if candidate.DesktopContext == "" && current.DesktopContext == ipc.DesktopContextLoginWindow {
 		return false
 	}
+	// The regular desktop must be hosted by the interactive user's helper. A
+	// SYSTEM helper can be attached to the same WTS session for UAC/secure-
+	// desktop duties, but hardware encoders are often unavailable to that token
+	// even though they are registered and usable by the logged-in user. Without
+	// this tie-breaker, reconnect timing decides which helper owns capture and
+	// can silently force an otherwise capable Intel/NVIDIA system to CPU encode.
+	// Keep the system helper eligible for login_window and other special desktop
+	// contexts where a user-role helper is deliberately not present.
+	if candidate.DesktopContext == ipc.DesktopContextUserSession &&
+		current.DesktopContext == ipc.DesktopContextUserSession {
+		if candidate.HelperRole == ipc.HelperRoleUser && current.HelperRole != ipc.HelperRoleUser {
+			return true
+		}
+		if candidate.HelperRole != ipc.HelperRoleUser && current.HelperRole == ipc.HelperRoleUser {
+			return false
+		}
+	}
 	return betterSession(candidate, current)
 }
 

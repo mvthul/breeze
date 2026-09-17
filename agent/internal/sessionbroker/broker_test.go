@@ -514,6 +514,49 @@ func TestPreferredDesktopSession_LoggedInConsole_PrefersUserSession(t *testing.T
 	}
 }
 
+func TestPreferredDesktopSession_UserDesktopPrefersInteractiveRoleOverSystem(t *testing.T) {
+	now := time.Now()
+
+	// Windows starts a SYSTEM helper in the active WTS session for secure
+	// desktop/UAC support as well as an interactive user helper for the normal
+	// desktop. The SYSTEM helper may reconnect later, but it must not win the
+	// normal capture route: hardware MFTs are exposed to the user token.
+	userSession := &Session{
+		SessionID:      "interactive-user",
+		BinaryKind:     ipc.HelperBinaryUserHelper,
+		HelperRole:     ipc.HelperRoleUser,
+		DesktopContext: ipc.DesktopContextUserSession,
+		Capabilities:   &ipc.Capabilities{CanCapture: true},
+		AllowedScopes:  []string{"desktop"},
+		ConnectedAt:    now.Add(-time.Minute),
+		LastSeen:       now.Add(-time.Second),
+	}
+	systemSession := &Session{
+		SessionID:      "system-user-session",
+		BinaryKind:     ipc.HelperBinaryUserHelper,
+		HelperRole:     ipc.HelperRoleSystem,
+		DesktopContext: ipc.DesktopContextUserSession,
+		Capabilities:   &ipc.Capabilities{CanCapture: true},
+		AllowedScopes:  []string{"desktop"},
+		ConnectedAt:    now,
+		LastSeen:       now,
+	}
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			userSession.SessionID:   userSession,
+			systemSession.SessionID: systemSession,
+		},
+		byIdentity: make(map[string][]*Session),
+	}
+	b.SetConsoleUser("Micha")
+
+	got := b.PreferredDesktopSession()
+	if got != userSession {
+		t.Fatalf("PreferredDesktopSession() = %q (%s), want interactive user helper %q", got.SessionID, got.HelperRole, userSession.SessionID)
+	}
+}
+
 func TestPreferredDesktopSession_LoginWindowConsole_OnlyLoginHelpers(t *testing.T) {
 	now := time.Now()
 
