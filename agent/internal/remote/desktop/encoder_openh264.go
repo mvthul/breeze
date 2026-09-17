@@ -46,9 +46,19 @@ func clampOpenH264Dimensions(width, height int) (int, int) {
 	// Preserve the display aspect ratio while staying below OpenH264's
 	// documented dependency-layer pixel ceiling. AlignEven keeps 4:2:0 input
 	// valid after the scale.
-	scale := (float64(maxOpenH264Pixels) / float64(width*height))
-	scale = math.Sqrt(scale)
-	return AlignEven(int(float64(width)*scale), int(float64(height)*scale))
+	scale := math.Sqrt(float64(maxOpenH264Pixels) / float64(width*height))
+	clampedWidth, clampedHeight := AlignEven(int(float64(width)*scale), int(float64(height)*scale))
+	// The aspect-ratio calculation and even-dimension alignment can still
+	// round the result a few pixels above the codec ceiling. Walk down by one
+	// macroblock until the final dimensions are unambiguously valid.
+	for clampedWidth > 0 && clampedHeight > 0 && clampedWidth*clampedHeight > maxOpenH264Pixels {
+		if float64(clampedWidth)/float64(width) >= float64(clampedHeight)/float64(height) {
+			clampedWidth -= 2
+		} else {
+			clampedHeight -= 2
+		}
+	}
+	return clampedWidth, clampedHeight
 }
 
 // PreloadOpenH264 eagerly loads the OpenH264 library (downloading if needed).
