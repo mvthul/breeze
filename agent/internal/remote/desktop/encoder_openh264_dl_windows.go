@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -24,6 +25,13 @@ const (
 	openH264SHA256 = "081b0c081480d177cbfddfbc90b1613640e702f875897b30d8de195cde73dd34"
 	// Fallback URL — Cisco's official CDN (HTTP only, but we verify SHA-256).
 	openH264FallbackURL = "http://ciscobinary.openh264.org/openh264-2.4.1-win64.dll.bz2"
+
+	// The agent data directory stays private because it also contains sensitive
+	// runtime state. This single, hash-verified codec DLL is intentionally the
+	// exception: an interactive user helper needs read/execute access to encode
+	// the logged-in desktop. The parent directory remains non-listable and
+	// non-writable for users.
+	openH264RuntimeFileSDDL = `D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FRFX;;;BU)`
 )
 
 // findOpenH264Library searches for the OpenH264 DLL on Windows.
@@ -42,6 +50,9 @@ func findOpenH264Library() (string, error) {
 	dataDir := config.GetDataDir()
 	candidate := filepath.Join(dataDir, openH264DLLName)
 	if _, err := os.Stat(candidate); err == nil {
+		if err := ensureOpenH264RuntimeReadable(candidate); err != nil {
+			slog.Warn("could not grant helpers read access to OpenH264 DLL", "path", candidate, "error", err)
+		}
 		return candidate, nil
 	}
 
@@ -52,7 +63,48 @@ func findOpenH264Library() (string, error) {
 	if err := downloadOpenH264DLL(dataDir); err != nil {
 		return "", fmt.Errorf("auto-download OpenH264: %w", err)
 	}
+	if err := ensureOpenH264RuntimeReadable(candidate); err != nil {
+		slog.Warn("could not grant helpers read access to downloaded OpenH264 DLL", "path", candidate, "error", err)
+	}
 	return candidate, nil
+}
+
+// ensureOpenH264RuntimeReadable changes only the public codec file ACL and
+// only when called by LocalSystem. A user helper merely consumes the ACL that
+// the service established; it can never relax file permissions itself.
+func ensureOpenH264RuntimeReadable(path string) error {
+	token, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return err
+	}
+	defer token.Close()
+
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return err
+	}
+	localSystem, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		return err
+	}
+	if !user.User.Sid.Equals(localSystem) {
+		return nil
+	}
+
+	sd, err := windows.SecurityDescriptorFromString(openH264RuntimeFileSDDL)
+	if err != nil {
+		return fmt.Errorf("parse codec DLL ACL: %w", err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return fmt.Errorf("extract codec DLL ACL: %w", err)
+	}
+	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, dacl, nil); err != nil {
+		return fmt.Errorf("set codec DLL ACL: %w", err)
+	}
+	return nil
 }
 
 func downloadOpenH264DLL(destDir string) error {
