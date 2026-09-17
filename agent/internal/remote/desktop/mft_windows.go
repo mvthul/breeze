@@ -137,29 +137,30 @@ func probeHardwareMFT() bool {
 	}
 	procMFStartup.Call(mfVersion, mfStartupFull)
 
+	// Some Intel drivers do not publish their concrete type information until
+	// activation. Probe the unfiltered hardware category first, then retain the
+	// typed query for drivers that require it. Log both results: this makes a
+	// driver/call-ABI problem distinguishable from a genuine lack of hardware.
+	if count, hr := enumerateMFTActivations(
+		mftEnumFlagHardware|mftEnumFlagSortAndFilter, nil, nil,
+	); count > 0 && int32(hr) >= 0 {
+		slog.Info("MFT hardware probe succeeded", "query", "untyped", "count", count, "hresult", fmt.Sprintf("0x%08X", uint32(hr)))
+		return true
+	} else {
+		slog.Warn("MFT hardware probe returned no candidates", "query", "untyped", "count", count, "hresult", fmt.Sprintf("0x%08X", uint32(hr)))
+	}
+
 	inputType := mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatNV12}
 	outputType := mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatH264}
-
-	var ppActivate uintptr
-	var count uint32
-	hr, _, _ = procMFTEnumEx.Call(
-		uintptr(unsafe.Pointer(&mftCategoryVideoEncoder)),
-		uintptr(mftEnumFlagHardware|mftEnumFlagSortAndFilter),
-		uintptr(unsafe.Pointer(&inputType)),
-		uintptr(unsafe.Pointer(&outputType)),
-		uintptr(unsafe.Pointer(&ppActivate)),
-		uintptr(unsafe.Pointer(&count)),
+	count, hr := enumerateMFTActivations(
+		mftEnumFlagHardware|mftEnumFlagSortAndFilter, &inputType, &outputType,
 	)
-	if int32(hr) < 0 || count == 0 {
-		return false
+	if count > 0 && int32(hr) >= 0 {
+		slog.Info("MFT hardware probe succeeded", "query", "nv12-h264", "count", count, "hresult", fmt.Sprintf("0x%08X", uint32(hr)))
+		return true
 	}
-	// Release all IMFActivate objects and free the array
-	activateArray := unsafe.Slice((*uintptr)(unsafe.Pointer(ppActivate)), count)
-	for _, a := range activateArray {
-		comRelease(a)
-	}
-	procCoTaskMemFree.Call(ppActivate)
-	return true
+	slog.Warn("MFT hardware probe returned no candidates", "query", "nv12-h264", "count", count, "hresult", fmt.Sprintf("0x%08X", uint32(hr)))
+	return false
 }
 
 // initialize sets up COM, finds an MFT H264 encoder, and configures it.
@@ -494,6 +495,34 @@ func (m *mftEncoder) findEncoder(width, height int) (uintptr, bool, error) {
 }
 
 func (m *mftEncoder) enumAndActivate(flags uint32, inputType, outputType *mftRegisterTypeInfo) (uintptr, error) {
+	ppActivate, count, hr := enumerateMFTActivationArray(flags, inputType, outputType)
+	if int32(hr) < 0 || count == 0 {
+		return 0, fmt.Errorf("MFTEnumEx found %d encoders (flags=0x%X, HRESULT=0x%08X)", count, flags, uint32(hr))
+	}
+
+	// ppActivate is a pointer to an array of IMFActivate pointers.
+	// Get the first one, then release the complete activation array.
+	activatePtr := *(*uintptr)(unsafe.Pointer(ppActivate))
+	defer releaseMFTActivations(ppActivate, count)
+
+	// ActivateObject(IID_IMFTransform, &transform)
+	var transform uintptr
+	_, err := comCall(activatePtr, vtblActivateObject,
+		uintptr(unsafe.Pointer(&iidIMFTransform)),
+		uintptr(unsafe.Pointer(&transform)),
+	)
+
+	if err != nil {
+		return 0, fmt.Errorf("ActivateObject failed: %w", err)
+	}
+	return transform, nil
+}
+
+// enumerateMFTActivations returns an owned IMFActivate array. The caller must
+// release it with releaseMFTActivations. Keeping the GUID and type-info values
+// alive is required when calling a native API through uintptr: the compiler is
+// otherwise free to consider those Go values dead before the DLL call returns.
+func enumerateMFTActivationArray(flags uint32, inputType, outputType *mftRegisterTypeInfo) (uintptr, uint32, uintptr) {
 	var ppActivate uintptr
 	var count uint32
 
@@ -505,32 +534,33 @@ func (m *mftEncoder) enumAndActivate(flags uint32, inputType, outputType *mftReg
 		uintptr(unsafe.Pointer(&ppActivate)),
 		uintptr(unsafe.Pointer(&count)),
 	)
-	if int32(hr) < 0 || count == 0 {
-		return 0, fmt.Errorf("MFTEnumEx found 0 encoders (flags=0x%X)", flags)
+	runtime.KeepAlive(mftCategoryVideoEncoder)
+	runtime.KeepAlive(inputType)
+	runtime.KeepAlive(outputType)
+	runtime.KeepAlive(&ppActivate)
+	runtime.KeepAlive(&count)
+	return ppActivate, count, hr
+}
+
+func releaseMFTActivations(ppActivate uintptr, count uint32) {
+	if ppActivate == 0 {
+		return
 	}
-
-	// ppActivate is a pointer to an array of IMFActivate pointers
-	// Get the first one
-	activatePtr := *(*uintptr)(unsafe.Pointer(ppActivate))
-
-	// ActivateObject(IID_IMFTransform, &transform)
-	var transform uintptr
-	_, err := comCall(activatePtr, vtblActivateObject,
-		uintptr(unsafe.Pointer(&iidIMFTransform)),
-		uintptr(unsafe.Pointer(&transform)),
-	)
-
-	// Release all IMFActivate objects and free the array
 	activateArray := unsafe.Slice((*uintptr)(unsafe.Pointer(ppActivate)), count)
 	for _, a := range activateArray {
 		comRelease(a)
 	}
 	procCoTaskMemFree.Call(ppActivate)
+}
 
-	if err != nil {
-		return 0, fmt.Errorf("ActivateObject failed: %w", err)
+// enumerateMFTActivations is a diagnostic-safe query that releases its result
+// array immediately.
+func enumerateMFTActivations(flags uint32, inputType, outputType *mftRegisterTypeInfo) (uint32, uintptr) {
+	ppActivate, count, hr := enumerateMFTActivationArray(flags, inputType, outputType)
+	if ppActivate != 0 {
+		releaseMFTActivations(ppActivate, count)
 	}
-	return transform, nil
+	return count, hr
 }
 
 func (m *mftEncoder) setOutputType(transform uintptr, width, height int) error {
