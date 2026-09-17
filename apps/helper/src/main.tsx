@@ -19,6 +19,14 @@ function ConsentWindow() {
   const [req, setReq] = useState<ConsentRequest | null>(null);
 
   useEffect(() => {
+    invoke<ConsentRequest | null>('get_consent_request')
+      .then((stored) => {
+        if (stored) setReq(stored);
+      })
+      .catch((err) => {
+        console.warn('[helper] failed to get initial consent request:', err);
+      });
+
     let unlisten: (() => void) | undefined;
     listen<ConsentRequest>('consent-request', (e) => {
       setReq(e.payload);
@@ -40,11 +48,25 @@ function ConsentWindow() {
     getCurrentWindow().close().catch(() => {});
   };
 
-  if (!req) return null;
+  if (!req) {
+    return (
+      <div className="helper-consent-overlay" role="alertdialog" aria-busy="true">
+        <div className="helper-consent-card">
+          <div className="helper-consent-header">
+            <span className="helper-consent-icon" aria-hidden>▣</span>
+            <span className="helper-consent-title">Remote support request</span>
+          </div>
+          <div className="helper-consent-body">
+            <p className="helper-consent-desc">Connecting...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return <ConsentDialog req={req} onDecision={handleDecision} />;
 }
 
-// ── Banner window ────────────────────────────────────────────────────────────
+// ── Banner window ─────────────────────────────────────────────────────────
 
 type BannerPayload = { label: string; startedAt: number };
 
@@ -52,6 +74,14 @@ function BannerWindow() {
   const [data, setData] = useState<BannerPayload | null>(null);
 
   useEffect(() => {
+    invoke<BannerPayload | null>('get_banner_payload')
+      .then((stored) => {
+        if (stored) setData(stored);
+      })
+      .catch((err) => {
+        console.warn('[helper] failed to get initial banner payload:', err);
+      });
+
     let unlisten: (() => void) | undefined;
     listen<BannerPayload>('banner-show', (e) => {
       setData(e.payload);
@@ -63,12 +93,14 @@ function BannerWindow() {
   return <SessionBanner label={data.label} startedAt={data.startedAt} />;
 }
 
-// ── Entry point — branch on window.location.hash ─────────────────────────────
+// ── Entry point — branch on window.location.hash ───────────────────────────
 
 const hash = window.location.hash;
 
 let root: React.ReactNode;
 if (hash === '#consent') {
+  // consent-root class on the mount element so transparent-window CSS applies
+  document.getElementById('root')!.className = 'consent-root';
   root = <ConsentWindow />;
 } else if (hash === '#banner') {
   // banner-root class on the mount element so transparent-window CSS applies

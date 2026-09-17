@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   ANSWER_POLL_INITIAL_INTERVAL_MS,
   ANSWER_POLL_MAX_INTERVAL_MS,
+  DEFAULT_ANSWER_POLL_TIMEOUT_MS,
   createWebRTCSession,
   isSessionEndedResponse,
   isUnretryableViewerStatus,
@@ -90,6 +91,20 @@ describe('answer poll backoff', () => {
     expect(requests).toBeLessThan(40);
     // A flat 50ms poll would have issued 300 over the same window.
     expect(requests).toBeLessThan(15_000 / ANSWER_POLL_INITIAL_INTERVAL_MS / 5);
+  });
+
+  it('keeps a full 45s wait far below the 300-request per-IP budget', () => {
+    let elapsed = 0;
+    let interval = ANSWER_POLL_INITIAL_INTERVAL_MS;
+    let requests = 0;
+    while (elapsed < DEFAULT_ANSWER_POLL_TIMEOUT_MS) {
+      requests += 1;
+      elapsed += interval;
+      interval = nextAnswerPollInterval(interval);
+    }
+
+    // 45s with 500ms max interval issues ~95 requests, well under the 300/60s bucket
+    expect(requests).toBeLessThan(110);
   });
 
   it('still polls quickly at the start so a healthy agent is picked up fast', () => {
@@ -405,7 +420,7 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
 
       const pending = createWebRTCSession(baseParams, videoEl);
       const settled = pending.catch((e: unknown) => e);
-      await vi.advanceTimersByTimeAsync(16_000);
+      await vi.advanceTimersByTimeAsync(DEFAULT_ANSWER_POLL_TIMEOUT_MS + 1000);
 
       const message = (await settled as Error).message;
       expect(message).toContain('Timed out');
@@ -413,8 +428,8 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
       // identical to an agent that simply never answered.
       expect(message).toContain('429');
       expect(polls()).toBeGreaterThan(1);
-      // A flat 50ms poll would have issued ~300 here.
-      expect(polls()).toBeLessThan(40);
+      // A flat 50ms poll would have issued ~900 here over 45s.
+      expect(polls()).toBeLessThan(110);
     });
   });
 });

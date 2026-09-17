@@ -18,6 +18,24 @@ import {
   threatDetectionOptionsFromConfig,
   type ThreatDetectionOptions,
 } from './ThreatDetectionOptionsForm';
+import {
+  DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS,
+  EndpointManagementOptionsFields,
+  endpointManagementOptionsFromConfig,
+  type EndpointManagementOptions,
+} from './EndpointManagementOptionsForm';
+import {
+  DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS,
+  VulnerabilityManagementOptionsFields,
+  vulnerabilityManagementOptionsFromConfig,
+  type VulnerabilityManagementOptions,
+} from './VulnerabilityManagementOptionsForm';
+import {
+  DEFAULT_IDENTITY_ACCESS_OPTIONS,
+  IdentityAccessOptionsFields,
+  identityAccessOptionsFromConfig,
+  type IdentityAccessOptions,
+} from './IdentityAccessOptionsForm';
 import { useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -36,6 +54,9 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const [backupRequired, setBackupRequired] = useState(true);
   const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
   const [threatOptions, setThreatOptions] = useState<ThreatDetectionOptions>(DEFAULT_THREAT_DETECTION_OPTIONS);
+  const [endpointManagementOptions, setEndpointManagementOptions] = useState<EndpointManagementOptions>(DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS);
+  const [vulnerabilityOptions, setVulnerabilityOptions] = useState<VulnerabilityManagementOptions>(DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS);
+  const [identityOptions, setIdentityOptions] = useState<IdentityAccessOptions>(DEFAULT_IDENTITY_ACCESS_OPTIONS);
 
   const fetchReport = useCallback(async () => {
     try {
@@ -51,6 +72,9 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       setBackupRequired(config.backupRequired !== false);
       setLifecycleOptions(hardwareLifecycleOptionsFromConfig(config));
       setThreatOptions(threatDetectionOptionsFromConfig(config));
+      setEndpointManagementOptions(endpointManagementOptionsFromConfig(config));
+      setVulnerabilityOptions(vulnerabilityManagementOptionsFromConfig(config));
+      setIdentityOptions(identityAccessOptionsFromConfig(config));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('reports.reportEditPage.errors.generic'));
     } finally {
@@ -113,6 +137,9 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const isPosture = report.type === 'security_compliance_posture';
   const isLifecycle = report.type === 'hardware_lifecycle';
   const isThreatDetection = report.type === 'threat_detection_review';
+  const isEndpointManagement = report.type === 'endpoint_management_review';
+  const isVulnerability = report.type === 'vulnerability_management';
+  const isIdentityAccess = report.type === 'identity_access_review';
   const defaultValues: Partial<ReportBuilderFormValues> = {
     name: report.name,
     type: report.type as ReportType,
@@ -166,6 +193,27 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
         </div>
       )}
 
+      {isEndpointManagement && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <EndpointManagementOptionsFields
+            value={endpointManagementOptions}
+            onChange={setEndpointManagementOptions}
+          />
+        </div>
+      )}
+
+      {isVulnerability && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <VulnerabilityManagementOptionsFields value={vulnerabilityOptions} onChange={setVulnerabilityOptions} />
+        </div>
+      )}
+
+      {isIdentityAccess && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <IdentityAccessOptionsFields value={identityOptions} onChange={setIdentityOptions} />
+        </div>
+      )}
+
       <ReportBuilder
         mode="edit"
         reportId={reportId}
@@ -177,7 +225,13 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
               ? { ...config, ...lifecycleOptions }
               : isThreatDetection
                 ? { ...config, ...threatOptions }
-                : config
+                : isEndpointManagement
+                  ? { ...config, ...endpointManagementOptions }
+                  : isVulnerability
+                    ? { ...config, ...vulnerabilityOptions }
+                    : isIdentityAccess
+                      ? { ...config, ...identityOptions }
+                      : config
         }
         onSubmit={handleSubmit}
         onCancel={handleCancel}

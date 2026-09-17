@@ -1,15 +1,20 @@
 import '@/lib/i18n';
 
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, cleanup, act } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import NetworkDeviceDetailPage from './NetworkDeviceDetailPage';
-import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
 
+// Keep legacy discovery/action queues separate from the new parallel reads.
+const { fetchWithAuthMock, monitoringFetchMock } = vi.hoisted(() => ({
+  fetchWithAuthMock: vi.fn(), monitoringFetchMock: vi.fn(),
+}));
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn(),
+  fetchWithAuth: (url: string, init?: RequestInit) =>
+    url.startsWith('/monitoring/assets/') || url.startsWith('/monitors?assetId=') || url === '/snmp/templates'
+      ? monitoringFetchMock(url, init) : init === undefined ? fetchWithAuthMock(url) : fetchWithAuthMock(url, init),
 }));
 
 vi.mock('@/lib/navigation', () => ({
@@ -22,7 +27,6 @@ vi.mock('../shared/Toast', () => ({
   showToast: vi.fn(),
 }));
 
-const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -38,7 +42,16 @@ const devicesResponse = (devices: Array<{ id: string; displayName?: string; host
 
 const ASSET_ID = '11111111-1111-1111-1111-111111111111';
 
+const baseReachability = {
+  state: 'responding' as const,
+  source: 'snmp' as const,
+  observedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+  lastKnown: null,
+  detail: { snmp: { state: 'ok' as const, observedAt: new Date(Date.now() - 2 * 60_000).toISOString(), consecutiveFailures: 0 } },
+};
+
 const baseAsset = {
+  reachability: baseReachability,
   id: ASSET_ID,
   orgId: 'org-1',
   siteId: 'site-1',
@@ -71,6 +84,17 @@ const baseAsset = {
   lastSeenAt: '2026-06-26T10:00:00.000Z',
 };
 
+const baseCollection = {
+  status: 'ok', templateId: 'template-1', pollingInterval: 300,
+  lastPolledAt: new Date(Date.now() - 120_000).toISOString(), nextPollAt: null,
+  consecutiveFailures: 0, oids: [],
+};
+function monitoringResponse(url: string): Promise<Response> {
+  if (url === `/monitoring/assets/${ASSET_ID}`) return Promise.resolve(makeJsonResponse({ collection: baseCollection, snmpDevice: null }));
+  if (url === '/snmp/templates') return Promise.resolve(makeJsonResponse({ data: [{ id: 'template-1', name: 'Switch template' }] }));
+  return Promise.resolve(makeJsonResponse({ data: [] }));
+}
+
 // OverflowTabs measures button widths via `offsetWidth`, which jsdom always
 // reports as 0 against a `clientWidth` of 0 — that collapses to "fits 1 tab"
 // (see computeVisible in OverflowTabs.tsx), so with two tabs "Overview" stays
@@ -81,9 +105,193 @@ function openMonitoringTab() {
 }
 
 describe('NetworkDeviceDetailPage', () => {
+  it('shows the persisted SNMP error in the header', async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => Promise.resolve(
+      makeJsonResponse(url === `/discovery/assets/${ASSET_ID}` ? { data: baseAsset } : { data: [] }),
+    ));
+    monitoringFetchMock.mockImplementation((url: string) => url === `/monitoring/assets/${ASSET_ID}`
+      ? Promise.resolve(makeJsonResponse({ collection: baseCollection, snmpDevice: {
+        lastError: 'SNMP walk timed out', lastErrorAt: '2026-09-16T10:00:00.000Z',
+      } }))
+      : monitoringResponse(url));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    expect(await screen.findByTestId('network-device-last-error')).toHaveTextContent('Last error: SNMP walk timed out');
+  });
+
+  it('omits the last error line when the successful poll cleared the error', async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => Promise.resolve(
+      makeJsonResponse(url === `/discovery/assets/${ASSET_ID}` ? { data: baseAsset } : { data: [] }),
+    ));
+    monitoringFetchMock.mockImplementation((url: string) => url === `/monitoring/assets/${ASSET_ID}`
+      ? Promise.resolve(makeJsonResponse({ collection: baseCollection, snmpDevice: { lastError: null, lastErrorAt: null } }))
+      : monitoringResponse(url));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-name');
+    expect(screen.queryByTestId('network-device-last-error')).not.toBeInTheDocument();
+  });
+
+  it('composes the reachability card, the type health card and the monitoring sections from the asset and monitoring endpoints', async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => Promise.resolve(
+      makeJsonResponse(url === `/discovery/assets/${ASSET_ID}` ? { data: baseAsset } : { data: [] }),
+    ));
+    monitoringFetchMock.mockImplementation(monitoringResponse);
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    expect(await screen.findByTestId('network-detail-reachability-card')).toBeInTheDocument();
+    expect(screen.getByTestId('network-detail-health')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('network-detail-stat-last-poll')).toHaveTextContent('Polling'));
+    expect(screen.getByTestId('network-detail-health')).toHaveTextContent('Device health');
+    openMonitoringTab();
+    for (const id of ['poll-config', 'oid-table', 'charts', 'checks', 'thresholds']) {
+      expect(await screen.findByTestId(`network-detail-${id}`)).toBeInTheDocument();
+    }
+    expect(monitoringFetchMock).toHaveBeenCalledWith(`/monitors?assetId=${ASSET_ID}`, undefined);
+    expect(monitoringFetchMock).toHaveBeenCalledWith(`/monitoring/assets/${ASSET_ID}/thresholds`, undefined);
+    expect(monitoringFetchMock).toHaveBeenCalledWith('/snmp/templates', undefined);
+  });
+
+  it.each(['approve', 'dismiss'] as const)('reports a failed read after a saved %s', async (action) => {
+    let saved = false;
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url === `/discovery/assets/${ASSET_ID}/${action}`) {
+        saved = true;
+        return Promise.resolve(makeJsonResponse({ success: true }));
+      }
+      if (url === `/discovery/assets/${ASSET_ID}`) return Promise.resolve(saved
+        ? makeJsonResponse({}, false) : makeJsonResponse({ data: { ...baseAsset, approvalStatus: 'pending' } }));
+      return Promise.resolve(devicesResponse([]));
+    });
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    fireEvent.click(await screen.findByTestId(`network-detail-${action}`));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({
+      type: 'error', message: 'Saved, but the page could not refresh. Reload to see the change.',
+    }));
+    expect(screen.getByTestId(`network-detail-${action}`)).toBeEnabled();
+  });
+
+  it('uses the site Chicago timezone for the badge title and First seen', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: {
+      ...baseAsset, siteTimezone: 'America/Chicago', firstSeenAt: '2026-09-16T10:07:00.000Z',
+      reachability: { ...baseReachability, observedAt: '2026-09-16T10:07:00.000Z' },
+    } }));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    expect(await screen.findByTestId('network-device-status')).toHaveAttribute('title', expect.stringContaining('05:07'));
+    expect(screen.getByTestId('network-detail-first-seen')).toHaveTextContent('05:07');
+  });
+
+  it('polls a pending 202 probe after 3 s and displays timeout after 63 s', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pending = false;
+      fetchWithAuthMock.mockImplementation((url: string) => {
+        if (url.endsWith('/probe')) {
+          pending = true;
+          return Promise.resolve(makeJsonResponse({ probe: { state: 'pending' } }, true, 202));
+        }
+        // Exercise the compatibility fallback when only reachability.detail.probe is present.
+        if (url === `/discovery/assets/${ASSET_ID}`) return Promise.resolve(makeJsonResponse({ data: {
+          ...baseAsset, reachability: { ...baseReachability, detail: {
+            ...baseReachability.detail, ...(pending ? { probe: { state: 'pending', observedAt: null, responseMs: null } } : {}),
+          } },
+        } }));
+        return Promise.resolve(devicesResponse([]));
+      });
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      fireEvent.click(await screen.findByTestId('network-detail-check-now'));
+      await waitFor(() => expect(screen.getByTestId('network-detail-probe-status')).toBeInTheDocument());
+      const gets = () => fetchWithAuthMock.mock.calls.filter(([url]) => url === `/discovery/assets/${ASSET_ID}`).length;
+      await act(async () => {});
+      const before = gets();
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+      expect(gets()).toBe(before + 1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(screen.getByTestId('network-detail-probe-error')).toHaveTextContent("The agent didn't answer within a minute");
+      expect(screen.getByTestId('network-detail-check-now')).toBeEnabled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('names the probe source in the header after a successful check', async () => {
+    let checked = false;
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      const probe = { state: 'ok', observedAt: new Date().toISOString(), responseMs: 4 };
+      if (url.endsWith('/probe')) { checked = true; return Promise.resolve(makeJsonResponse({ probe })); }
+      if (url === `/discovery/assets/${ASSET_ID}`) return Promise.resolve(makeJsonResponse({ data: {
+        ...baseAsset, ...(checked ? { probe, reachability: {
+          ...baseReachability, source: 'probe', observedAt: probe.observedAt, detail: { probe },
+        } } : {}),
+      } }));
+      return Promise.resolve(devicesResponse([]));
+    });
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    fireEvent.click(await screen.findByTestId('network-detail-check-now'));
+    await waitFor(() => expect(screen.getByTestId('network-device-status')).toHaveTextContent(/Responding · probe/i));
+    expect(fetchWithAuthMock.mock.calls.filter(([url]) => url.endsWith('/probe'))).toHaveLength(1);
+  });
+
+  it.each(['approve', 'dismiss'] as const)('uses the single writer to %s and refreshes the banner', async (action) => {
+    const approvalStatus = action === 'approve' ? 'approved' : 'dismissed';
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, approvalStatus: 'pending' } }))
+      .mockResolvedValueOnce(devicesResponse([]))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true }))
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, approvalStatus } }));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    fireEvent.click(await screen.findByTestId(`network-detail-${action}`));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(
+      `/discovery/assets/${ASSET_ID}/${action}`, { method: 'PATCH' },
+    ));
+    await waitFor(() => expect(screen.getByTestId('network-detail-live').textContent).toMatch(
+      action === 'approve' ? /approved/i : /dismissed/i,
+    ));
+    expect(screen.queryByTestId('network-detail-dismiss')).toBeNull();
+  });
+
+  it.each(['approve', 'dismiss'] as const)('clears busy after a failed %s without duplicate feedback', async (action) => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, approvalStatus: 'pending' } }))
+      .mockResolvedValueOnce(devicesResponse([]))
+      .mockResolvedValueOnce(makeJsonResponse({ error: 'Decision failed' }, false));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    fireEvent.click(await screen.findByTestId(`network-detail-${action}`));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByTestId('network-detail-approve')).toBeEnabled());
+    expect(screen.getByTestId('network-detail-dismiss')).toBeEnabled();
+    expect(screen.getByTestId('network-detail-live')).toBeEmptyDOMElement();
+  });
+
+  it('renders unknown approval muted without triage actions and missing reachability as unverified', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({
+      data: { ...baseAsset, approvalStatus: 'future-status', reachability: null },
+    }));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    expect(screen.getByTestId('network-detail-approval-badge')).toHaveClass('bg-muted');
+    expect(screen.queryByTestId('network-detail-approval-banner')).toBeNull();
+    expect(screen.getByTestId('network-device-status')).toHaveTextContent('Unverified · never observed');
+  });
+
+  it('hides the approval badge when approved and shows the banner when pending', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ data: { ...baseAsset, reachability: baseReachability } }),
+    );
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    expect(screen.queryByTestId('network-detail-approval-badge')).toBeNull();
+    expect(screen.queryByTestId('network-detail-approval-banner')).toBeNull();
+
+    cleanup();
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ data: { ...baseAsset, approvalStatus: 'pending', reachability: baseReachability } }),
+    );
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    expect(screen.getByTestId('network-detail-approval-badge')).toBeInTheDocument();
+    expect(screen.getByTestId('network-detail-approval-banner')).toBeInTheDocument();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     fetchWithAuthMock.mockReset();
+    monitoringFetchMock.mockReset().mockImplementation(monitoringResponse);
     window.location.hash = '';
   });
 
@@ -101,7 +309,10 @@ describe('NetworkDeviceDetailPage', () => {
 
     expect(screen.getByTestId('network-device-name').textContent).toContain('Main Switch');
     expect(screen.getByTestId('network-asset-type').textContent).toContain('Switch');
-    expect(screen.getByTestId('network-device-status').textContent).toContain('Online');
+    const status = screen.getByTestId('network-device-status').textContent ?? '';
+    expect(status).toContain('Responding');
+    expect(status).toContain('SNMP');
+    expect(status).not.toBe('Online');
     expect(screen.getByTestId('network-detail-ping').textContent).toContain('2.4 ms');
 
     const ports = screen.getByTestId('network-detail-ports');
@@ -118,15 +329,15 @@ describe('NetworkDeviceDetailPage', () => {
     expect(snmp.textContent).toContain('Cisco IOS');
   });
 
-  it('renders the offline state and a dash ping when the asset is down', async () => {
+  it('renders sourced non-response and a dash ping when the asset is down', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ data: { ...baseAsset, isOnline: false, responseTimeMs: null } }),
+      makeJsonResponse({ data: { ...baseAsset, isOnline: false, reachability: { ...baseReachability, state: 'not_responding' }, responseTimeMs: null } }),
     );
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
 
-    expect(screen.getByTestId('network-device-status').textContent).toContain('Offline');
+    expect(screen.getByTestId('network-device-status').textContent).toContain('Not responding');
     expect(screen.getByTestId('network-detail-ping').textContent).toBe('—');
   });
 
@@ -213,15 +424,15 @@ describe('NetworkDeviceDetailPage', () => {
     await screen.findByTestId('network-detail-monitoring');
     expect(window.location.hash).toBe('#monitoring');
     const monitoring = screen.getByTestId('network-detail-monitoring');
-    expect(monitoring.textContent).toContain('SNMP monitoring');
-    expect(monitoring.textContent).toContain('Enabled');
-    expect(monitoring.textContent).toContain('Not linked');
+    await screen.findByTestId('network-detail-poll-config');
+    expect(monitoring.textContent).not.toContain('Enabled');
+    expect(monitoring.textContent).toContain('Polling');
   });
 
   // #reviewFix10b: each tab must point at its panel via aria-controls, and
   // the panel must be named with aria-label (not aria-labelledby) since the
   // labelling tab element doesn't exist in the DOM while it's in overflow.
-  it('links each tab to its panel via aria-controls, naming the panel with aria-label', async () => {
+  it('links each tab to its panel via aria-controls, naming the panel with aria-labelledby', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
@@ -230,13 +441,15 @@ describe('NetworkDeviceDetailPage', () => {
     const overviewTab = screen.getByTestId('network-detail-tab-overview');
     const overviewPanel = screen.getByTestId('network-detail-overview');
     expect(overviewTab.getAttribute('aria-controls')).toBe(overviewPanel.id);
-    expect(overviewPanel.getAttribute('aria-label')).toBe('Overview');
-    expect(overviewPanel.hasAttribute('aria-labelledby')).toBe(false);
+    expect(overviewPanel.getAttribute('aria-labelledby')).toBe(overviewTab.id);
+    expect(overviewPanel).toHaveAccessibleName('Overview');
+    expect(overviewPanel).not.toHaveAttribute('aria-label');
 
     openMonitoringTab();
     const monitoringPanel = await screen.findByTestId('network-detail-monitoring');
-    expect(monitoringPanel.getAttribute('aria-label')).toBe('Monitoring');
-    expect(monitoringPanel.hasAttribute('aria-labelledby')).toBe(false);
+    expect(monitoringPanel.getAttribute('aria-labelledby')).toBe('network-detail-tab-monitoring');
+    expect(monitoringPanel).toHaveAccessibleName('Monitoring');
+    expect(monitoringPanel).not.toHaveAttribute('aria-label');
   });
 
   it('initializes the active tab from the URL hash on mount', async () => {
@@ -260,7 +473,6 @@ describe('NetworkDeviceDetailPage', () => {
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
 
-    openMonitoringTab();
     const link = await screen.findByTestId('network-detail-linked-device');
     expect(link.getAttribute('href')).toBe('/devices/dev-9');
     expect(link.textContent).toContain('agent-host');
@@ -276,7 +488,6 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
 
     expect(await screen.findByTestId('network-detail-edit-link')).toBeTruthy();
     expect(screen.getByTestId('network-detail-link-provenance').textContent).toContain('set manually');
@@ -292,7 +503,6 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
 
     await screen.findByTestId('network-detail-linked-device');
     expect(screen.getByTestId('network-detail-edit-link')).toBeTruthy();
@@ -307,9 +517,7 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
 
-    await screen.findByTestId('network-detail-monitoring');
     expect(screen.getByTestId('network-detail-suppressed').textContent).toContain(
       'Auto-linking is off for this asset because someone unlinked it',
     );
@@ -322,9 +530,7 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
 
-    await screen.findByTestId('network-detail-monitoring');
     expect(screen.queryByTestId('network-detail-suppressed')).toBeNull();
   });
 
@@ -346,7 +552,6 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
     const nameBefore = screen.getByTestId('network-device-name');
 
     fireEvent.click(screen.getByTestId('network-detail-edit-link'));
@@ -503,11 +708,8 @@ describe('NetworkDeviceDetailPage', () => {
       const site = screen.getByTestId('network-detail-site');
       expect(site.textContent).toContain('HQ Office');
 
-      const subtitle = site.parentElement as HTMLElement;
-      const children = Array.from(subtitle.children);
-      expect(children.indexOf(site)).toBeLessThan(
-        children.findIndex((el) => el.textContent === baseAsset.ipAddress),
-      );
+      const subtitle = site.parentElement!.parentElement as HTMLElement;
+      expect(subtitle.textContent).toContain(`HQ Office·${baseAsset.ipAddress}`);
     });
 
     it('omits the site element when the asset endpoint returns no site name', async () => {
@@ -1216,7 +1418,7 @@ describe('NetworkDeviceDetailPage', () => {
   });
 
   describe('stat strip', () => {
-    it('renders status, ping, open ports and linked device stats', async () => {
+    it('renders sourced reachability, last poll, ping and open ports stats', async () => {
       fetchWithAuthMock.mockResolvedValueOnce(
         makeJsonResponse({
           data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host' },
@@ -1227,18 +1429,14 @@ describe('NetworkDeviceDetailPage', () => {
       await screen.findByTestId('network-device-detail');
 
       const stats = screen.getByTestId('network-detail-stats');
-      expect(stats.textContent).toContain('Online');
+      expect(stats.textContent).toContain('Responding · SNMP');
       expect(stats.textContent).toContain('2.4 ms');
-      // baseAsset.lastSeenAt is well over a week in the past relative to any
-      // real test run, so formatLastSeen falls back to an absolute date —
-      // stable to assert on without mocking the clock.
-      expect(stats.textContent).toMatch(/as of/i);
+      await waitFor(() => expect(screen.getByTestId('network-detail-stat-last-poll')).toHaveTextContent('Polling'));
+      expect(screen.getByTestId('network-detail-stat-last-poll')).not.toHaveTextContent('Not configured');
       // baseAsset.openPorts has 2 entries.
       expect(screen.getByTestId('network-detail-stat-ports').textContent).toContain('2');
 
-      const linked = screen.getByTestId('network-detail-stat-linked');
-      expect(linked.getAttribute('href')).toBe('/devices/dev-9');
-      expect(linked.textContent).toContain('agent-host');
+      expect(screen.queryByTestId('network-detail-stat-linked')).toBeNull();
     });
 
     it('renders 0 (not a dash) for the open-ports stat when the asset has no open ports', async () => {
@@ -1275,7 +1473,7 @@ describe('NetworkDeviceDetailPage', () => {
       }
     });
 
-    it('shows a dash for the linked-device stat when the asset is unlinked', async () => {
+    it('omits the linked-device stat when the asset is unlinked', async () => {
       fetchWithAuthMock.mockResolvedValueOnce(
         makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: null } }),
       );
@@ -1285,7 +1483,7 @@ describe('NetworkDeviceDetailPage', () => {
 
       expect(screen.queryByTestId('network-detail-stat-linked')).toBeNull();
       const stats = screen.getByTestId('network-detail-stats');
-      expect(stats.textContent).toContain('—');
+      expect(stats.textContent).not.toContain('Linked device');
     });
 
     it('colors the ping value using the same thresholds as the discovery list', async () => {

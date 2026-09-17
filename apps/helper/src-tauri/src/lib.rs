@@ -508,6 +508,16 @@ fn submit_consent(app: tauri::AppHandle, session_id: String, decision: String) {
     crate::ipc::desktop::close_consent_window(&app);
 }
 
+#[tauri::command]
+fn get_consent_request() -> Option<crate::ipc::desktop::ConsentRequestEvent> {
+    crate::ipc::desktop::get_pending_consent()
+}
+
+#[tauri::command]
+fn get_banner_payload() -> Option<crate::ipc::desktop::BannerShowEvent> {
+    crate::ipc::desktop::get_pending_banner()
+}
+
 /// Update the helper status file when chat activity changes.
 /// Called from the frontend when a chat session starts/ends or on message activity.
 #[tauri::command]
@@ -1058,6 +1068,8 @@ pub fn run() {
             update_chat_active,
             helper_token_ready,
             submit_consent,
+            get_consent_request,
+            get_banner_payload,
             workspace_open::open_workspace_path,
         ])
         .setup(|app| {

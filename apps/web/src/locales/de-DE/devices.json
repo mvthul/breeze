@@ -2313,6 +2313,14 @@
     "genericError": "Wartungsmodus konnte nicht gestartet werden."
   },
   "networkDeviceDetailPage": {
+    "approval": {
+      "pendingBanner": "Genehmigung ausstehend: Es wird noch nichts überwacht.",
+      "dismissedBanner": "Verworfen: in Gerätelisten ausgeblendet.",
+      "approve": "Genehmigen",
+      "dismiss": "Verwerfen",
+      "approvedAnnouncement": "Asset genehmigt",
+      "dismissedAnnouncement": "Asset verworfen"
+    },
     "backToDevices": "Zurück zu den Geräten",
     "confirmUnlink": "Verknüpfung dieses Geräts aufheben?",
     "confirmUnlinkMessage": "Der Discovery-Eintrag und das verwaltete Gerät werden danach als separate Einträge angezeigt. Die automatische Verknüpfung bleibt für dieses Gerät deaktiviert, bis Sie es erneut verknüpfen.",
@@ -2320,9 +2328,14 @@
     "emptyPorts": "Beim letzten Scan wurden keine offenen Ports gefunden.",
     "emptySnmp": "Es wurden keine SNMP-Daten erfasst – das Gerät hat möglicherweise nicht reagiert oder SNMP wurde nicht geprüft. Überprüfen Sie, ob die SNMP-Methode aktiviert ist und der Community-String im Erkennungsprofil festgelegt ist.",
     "errors": {
+      "unexpected": "Etwas ist schiefgelaufen. Bitte versuchen Sie es erneut.",
       "load": "Das Netzwerkgerät konnte nicht geladen werden. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
       "malformed": "Der Server hat eine unerwartete Antwort für dieses Netzwerkgerät zurückgegeben. Versuchen Sie es erneut, und wenden Sie sich an den Support, falls das Problem weiterhin auftritt.",
-      "notFound": "Netzwerkgerät nicht gefunden"
+      "notFound": "Netzwerkgerät nicht gefunden",
+      "monitoringLoad": "Die Überwachungsdaten dieses Geräts konnten nicht geladen werden. Versuchen Sie es erneut.",
+      "checksLoad": "Netzwerkprüfungen konnten nicht geladen werden.",
+      "thresholdsLoad": "Schwellenwertalarme konnten nicht geladen werden.",
+      "templateLoad": "Die SNMP-Vorlage konnte nicht geladen werden."
     },
     "fields": {
       "assetType": "Typ",
@@ -2341,7 +2354,20 @@
       "ping": "Ping",
       "snmpMonitoring": "SNMP-Überwachung",
       "status": "Status",
-      "tags": "Schlagworte"
+      "tags": "Schlagworte",
+      "bridgingAgent": "Vermittelnder Agent",
+      "ipAddress": "IP-Adresse",
+      "macAddress": "MAC-Adresse",
+      "nicVendor": "Netzwerkkartenhersteller",
+      "nicVendorHint": "Der für die MAC-Adresse registrierte Hersteller. Er weicht vom Gerätehersteller ab, wenn die Netzwerkkarte von einem anderen Hersteller stammt.",
+      "site": "Standort",
+      "sysObjectId": "sysObjectID (Rohwert)",
+      "legacyScanVerdict": "Ergebnis des letzten Scans",
+      "legacyScanVerdictHint": "— das Ergebnis des letzten Subnetzscans, nicht die aktuelle Erreichbarkeit",
+      "pollStatus": "Abfragestatus",
+      "template": "Vorlage",
+      "pollingInterval": "Abfrageintervall",
+      "snmpTransport": "SNMP-Verbindung"
     },
     "goBack": "Zurück",
     "live": {
@@ -2379,10 +2405,38 @@
       "identity": "Identität",
       "monitoringStatus": "Überwachungsstatus",
       "openPorts": "Offene Ports",
-      "snmpData": "SNMP-Daten"
+      "snmpData": "SNMP-Daten",
+      "reachability": "Erreichbarkeit",
+      "collection": "Datenerfassung",
+      "printerHealth": "Druckerzustand",
+      "scanDetails": "Alle Scandetails",
+      "pollConfiguration": "Abfragekonfiguration",
+      "oids": "Objektkennungen (OIDs)",
+      "networkChecks": "Netzwerkprüfungen",
+      "thresholds": "SNMP-Schwellenwertalarme",
+      "history": "Verlauf",
+      "deviceHealth": "Gerätezustand"
     },
     "stats": {
-      "asOf": "Stand: {{time}}"
+      "asOf": "Stand: {{time}}",
+      "lowestSupply": "Niedrigster Füllstand",
+      "portsUp": "Aktive Ports",
+      "portsUpValue": "{{up}} von {{total}}",
+      "reachability": "Erreichbarkeit",
+      "lastPoll": "Letzte Abfrage"
+    },
+    "probe": {
+      "checkNow": "Jetzt prüfen",
+      "checking": "Wird geprüft…",
+      "errors": {
+        "noAgentInSite": "Kein Agent an diesem Standort ist online und kann das Gerät erreichen. Bringen Sie hier einen Agenten online und versuchen Sie es erneut.",
+        "inFlight": "Für dieses Gerät läuft bereits eine Prüfung.",
+        "noIp": "Dieses Gerät hat keine IP-Adresse, die geprüft werden kann.",
+        "timedOut": "Der Agent hat nicht innerhalb einer Minute geantwortet. Möglicherweise ist er offline oder beschäftigt.",
+        "unknown": "Dieses Gerät konnte gerade nicht geprüft werden.",
+        "noSite": "Dieses Asset ist keinem Standort zugewiesen. Weisen Sie es einem Standort zu und versuchen Sie es erneut.",
+        "refreshFailed": "Gespeichert, aber die Seite konnte das Ergebnis nicht lesen. Laden Sie die Seite neu."
+      }
     },
     "tabs": {
       "overview": "Übersicht",
@@ -2570,9 +2624,174 @@
       }
     },
     "header": {
+      "lastError": "Letzter Fehler: {{error}}",
       "settings": "Einstellungen"
     },
-    "editInSettings": "In den Einstellungen bearbeiten"
+    "editInSettings": "In den Einstellungen bearbeiten",
+    "reachability": {
+      "state": {
+        "responding": "Antwortet",
+        "notResponding": "Antwortet nicht",
+        "unverified": "Ungeprüft"
+      },
+      "source": {
+        "networkCheck": "Netzwerkprüfung",
+        "probe": "Erreichbarkeitsprüfung",
+        "scan": "Netzwerkscan",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "zuletzt von {{source}} gesehen: {{relative}}",
+      "neverObserved": "noch nie beobachtet",
+      "detail": {
+        "check": {
+          "online": "Erreichbar",
+          "degraded": "Beeinträchtigt",
+          "offline": "Nicht erreichbar"
+        },
+        "probe": {
+          "ok": "Geantwortet",
+          "failed": "Keine Antwort",
+          "pending": "Warten auf den Agenten"
+        },
+        "snmp": {
+          "ok": "Abfrage läuft",
+          "failing": "Fehlgeschlagen",
+          "no_template": "Keine Vorlage",
+          "no_agent": "Kein Agent am Standort",
+          "asset_moved": "Asset verschoben",
+          "never_polled": "Noch nie abgefragt"
+        },
+        "snmpFailures": "{{count}} aufeinanderfolgende Fehler",
+        "snmpNote": "Ein SNMP-Fehler kann den vermittelnden Agenten statt des Geräts betreffen — Fehler werden beim Versand der Abfrage gezählt.",
+        "scan": {
+          "seen": "Gesehen",
+          "missed": "Nicht gesehen"
+        },
+        "emptyTitle": "Für dieses Gerät liegen keine Meldungen vor",
+        "emptyDescription": "Bisher hat weder ein Scan noch eine Prüfung, Abfrage oder manuelle Erreichbarkeitsprüfung eine Beobachtung geliefert."
+      }
+    },
+    "collection": {
+      "status": {
+        "ok": "Abfrage läuft",
+        "failing": "Fehlgeschlagen",
+        "noTemplate": "Keine Vorlage",
+        "noAgent": "Kein Agent am Standort",
+        "assetMoved": "Asset verschoben",
+        "neverPolled": "Noch nie abgefragt",
+        "paused": "Pausiert",
+        "notConfigured": "Nicht konfiguriert"
+      },
+      "count": {
+        "collecting": "{{count}} werden erfasst",
+        "unsupported": "{{count}} nicht unterstützt",
+        "stale": "{{count}} veraltet",
+        "unknown": "{{count}} unbekannt",
+        "neverPolled": "{{count}} noch nie abgefragt",
+        "noOids": "Keine OIDs in dieser Vorlage"
+      },
+      "viewOids": "OIDs anzeigen",
+      "oidState": {
+        "collecting": "Wird erfasst",
+        "unsupported": "Nicht unterstützt",
+        "stale": "Veraltet",
+        "neverPolled": "Noch nie abgefragt",
+        "unknown": "Unbekannt"
+      },
+      "unknownNeedsAgentUpdate": "Diese Agent-Version kann keine Tabellenwerte lesen — aktualisieren Sie den Agent auf dem Vermittlungsgerät.",
+      "partialRows": "Unvollständig — die Tabellenabfrage hat ihr Zeilenlimit erreicht.",
+      "unsupportedWithCode": "Das Gerät hat mit {{code}} geantwortet — diese OID ist darauf nicht implementiert."
+    },
+    "health": {
+      "empty": {
+        "title": "Es wird noch nichts überwacht",
+        "action": "Überwachung einrichten",
+        "benefit": {
+          "printer": "Aktivieren Sie SNMP, um Toner- und Tintenstände, Papierfächer, Seitenzähler und Druckerfehler anzuzeigen.",
+          "switch": "Aktivieren Sie SNMP, um Schnittstellenstatus, Durchsatz pro Port und Betriebszeit anzuzeigen.",
+          "generic": "Aktivieren Sie SNMP, um Zustandsdaten dieses Geräts zu erfassen, oder fügen Sie eine Ping- oder Portprüfung hinzu."
+        }
+      },
+      "noTemplate": "SNMP ist aktiviert, aber es ist keine Vorlage zugewiesen — daher wird nichts abgefragt.",
+      "pickTemplate": "Vorlage auswählen",
+      "viewAllOids": "Alle {{count}} OIDs anzeigen"
+    },
+    "printer": {
+      "low": "Niedrig",
+      "supplyFallback": "Verbrauchsmaterial {{instance}}",
+      "pageCount": "Seiten insgesamt",
+      "sinceYesterday": "{{count}} seit gestern",
+      "sinceLastWeek": "{{count}} in der letzten Woche",
+      "notCollectedYet": "Es wurden noch keine Daten zum Druckerzustand erfasst.",
+      "status": {
+        "other": "Sonstiger Zustand",
+        "unknown": "Unbekannt",
+        "idle": "Bereit",
+        "printing": "Druckt",
+        "warmup": "Wärmt auf"
+      },
+      "deviceStatus": {
+        "unknown": "Unbekannt",
+        "running": "In Betrieb",
+        "warning": "Warnung",
+        "testing": "Test läuft",
+        "down": "Ausgefallen"
+      },
+      "errors": {
+        "lowPaper": "Wenig Papier",
+        "noPaper": "Kein Papier",
+        "lowToner": "Wenig Toner",
+        "noToner": "Kein Toner",
+        "doorOpen": "Klappe offen",
+        "jammed": "Papierstau",
+        "offline": "Nicht verbunden",
+        "serviceRequested": "Service erforderlich",
+        "inputTrayMissing": "Papierzufuhr fehlt",
+        "outputTrayMissing": "Ausgabefach fehlt",
+        "markerSupplyMissing": "Verbrauchsmaterial fehlt",
+        "outputNearFull": "Ausgabefach fast voll",
+        "outputFull": "Ausgabefach voll",
+        "inputTrayEmpty": "Papierzufuhr leer",
+        "overduePreventMaint": "Wartung überfällig"
+      }
+    },
+    "charts": {
+      "loadFailed": "Der Verlauf dieses Messwerts konnte nicht geladen werden.",
+      "pickOids": "Diagramm",
+      "cap": "Die maximale Anzahl von {{count}} Diagrammen wird angezeigt. Entfernen Sie eines, um ein weiteres hinzuzufügen.",
+      "perBucket": "Änderung pro {{bucket}}",
+      "bucket": {
+        "fiveMinutes": "5 Min.",
+        "hour": "Stunde",
+        "day": "Tag"
+      },
+      "emptyTitle": "Noch keine Messwerte für OIDs",
+      "emptyDescription": "Der Verlauf erscheint, sobald eine Abfrage einen Wert für mindestens eine OID liefert.",
+      "truncated": "Es werden nur die ersten 64 Instanzreihen angezeigt."
+    },
+    "poll": {
+      "everySeconds": "alle {{count}} Sek.",
+      "everyMinutes": "alle {{count}} Min.",
+      "everyHours": "alle {{count}} Std."
+    },
+    "checks": {
+      "emptyTitle": "Keine Netzwerkprüfungen für dieses Gerät",
+      "emptyDescription": "Eine Ping- oder Portprüfung ermittelt die Erreichbarkeit dieses Geräts unabhängig vom Erkennungsscan.",
+      "add": "Prüfung hinzufügen",
+      "paused": "Pausiert",
+      "status": {
+        "online": "Erreichbar",
+        "degraded": "Beeinträchtigt",
+        "offline": "Nicht erreichbar",
+        "never": "Noch nie geprüft"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "Keine SNMP-Schwellenwertalarme eingerichtet",
+      "emptyDescription": "Abgefragte Werte dieses Geräts lösen bisher keine Alarme aus."
+    },
+    "loadingMonitoring": "Überwachungsdaten werden geladen…"
   },
   "osIcons": {
     "linux": "Linux",

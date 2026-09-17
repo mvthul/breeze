@@ -2313,6 +2313,14 @@
     "genericError": "Impossibile avviare la modalità manutenzione."
   },
   "networkDeviceDetailPage": {
+    "approval": {
+      "pendingBanner": "In attesa di approvazione: il monitoraggio non è ancora attivo.",
+      "dismissedBanner": "Ignorata: nascosta dagli elenchi dei dispositivi.",
+      "approve": "Approva",
+      "dismiss": "Ignora",
+      "approvedAnnouncement": "Risorsa approvata",
+      "dismissedAnnouncement": "Risorsa ignorata"
+    },
     "backToDevices": "Torna ai dispositivi",
     "confirmUnlink": "Scollegare questo dispositivo?",
     "confirmUnlinkMessage": "L'asset rilevato e il dispositivo gestito verranno mostrati come elementi separati. Il collegamento automatico resterà disattivato per questo asset finché non lo colleghi di nuovo.",
@@ -2320,9 +2328,14 @@
     "emptyPorts": "Nessuna porta aperta trovata nell'ultima scansione.",
     "emptySnmp": "Non è stato raccolto alcun dato SNMP — il dispositivo potrebbe non aver risposto oppure il controllo SNMP potrebbe non essere stato eseguito. Verifica che il metodo SNMP sia abilitato e che la community string sia impostata nel profilo di rilevamento.",
     "errors": {
+      "unexpected": "Si è verificato un errore. Riprova.",
       "load": "Impossibile caricare questo dispositivo di rete. Controlla la connessione e riprova.",
       "malformed": "Il server ha restituito una risposta imprevista per questo dispositivo di rete. Riprova e, se il problema persiste, contatta l'assistenza.",
-      "notFound": "Dispositivo di rete non trovato"
+      "notFound": "Dispositivo di rete non trovato",
+      "monitoringLoad": "Impossibile caricare i dati di monitoraggio di questo dispositivo. Riprova.",
+      "checksLoad": "Impossibile caricare i controlli di rete.",
+      "thresholdsLoad": "Impossibile caricare gli avvisi di soglia.",
+      "templateLoad": "Impossibile caricare il modello SNMP."
     },
     "fields": {
       "assetType": "Tipo",
@@ -2341,7 +2354,20 @@
       "ping": "Ping",
       "snmpMonitoring": "Monitoraggio SNMP",
       "status": "Stato",
-      "tags": "Tag"
+      "tags": "Tag",
+      "bridgingAgent": "Agente di collegamento",
+      "ipAddress": "Indirizzo IP",
+      "macAddress": "Indirizzo MAC",
+      "nicVendor": "Produttore della scheda di rete",
+      "nicVendorHint": "Il produttore registrato per l’indirizzo MAC, diverso dal produttore del dispositivo quando la scheda di rete è realizzata da un’altra azienda.",
+      "site": "Sede",
+      "sysObjectId": "sysObjectID (grezzo)",
+      "legacyScanVerdict": "Esito dell’ultima scansione",
+      "legacyScanVerdictHint": "— quanto registrato dall’ultima scansione della sottorete, non la raggiungibilità in tempo reale",
+      "pollStatus": "Stato delle interrogazioni",
+      "template": "Modello",
+      "pollingInterval": "Intervallo di interrogazione",
+      "snmpTransport": "Trasporto SNMP"
     },
     "goBack": "Torna indietro",
     "live": {
@@ -2379,10 +2405,38 @@
       "identity": "Identità",
       "monitoringStatus": "Stato monitoraggio",
       "openPorts": "Porte aperte",
-      "snmpData": "Dati SNMP"
+      "snmpData": "Dati SNMP",
+      "reachability": "Raggiungibilità",
+      "collection": "Raccolta",
+      "printerHealth": "Stato della stampante",
+      "scanDetails": "Tutti i dettagli della scansione",
+      "pollConfiguration": "Configurazione delle interrogazioni",
+      "oids": "OID",
+      "networkChecks": "Controlli di rete",
+      "thresholds": "Avvisi di soglia SNMP",
+      "history": "Cronologia",
+      "deviceHealth": "Stato del dispositivo"
     },
     "stats": {
-      "asOf": "aggiornato al {{time}}"
+      "asOf": "aggiornato al {{time}}",
+      "lowestSupply": "Materiale di consumo più basso",
+      "portsUp": "Porte attive",
+      "portsUpValue": "{{up}} su {{total}}",
+      "reachability": "Raggiungibilità",
+      "lastPoll": "Ultima interrogazione"
+    },
+    "probe": {
+      "checkNow": "Verifica ora",
+      "checking": "Verifica in corso…",
+      "errors": {
+        "noAgentInSite": "Nessun agente online in questo sito può raggiungere il dispositivo. Connetti un agente in questo sito, quindi riprova.",
+        "inFlight": "È già in corso una verifica per questo dispositivo.",
+        "noIp": "Questa risorsa non ha un indirizzo IP da verificare.",
+        "timedOut": "L’agente non ha risposto entro un minuto. Potrebbe essere offline o occupato.",
+        "unknown": "Impossibile verificare questo dispositivo al momento.",
+        "noSite": "Questa risorsa non è assegnata a un sito. Assegnala a un sito e riprova.",
+        "refreshFailed": "Salvato, ma la pagina non ha potuto leggere il risultato. Ricarica la pagina."
+      }
     },
     "tabs": {
       "overview": "Panoramica",
@@ -2570,9 +2624,174 @@
       }
     },
     "header": {
+      "lastError": "Ultimo errore: {{error}}",
       "settings": "Impostazioni"
     },
-    "editInSettings": "Modifica nelle impostazioni"
+    "editInSettings": "Modifica nelle impostazioni",
+    "reachability": {
+      "detail": {
+        "check": {
+          "online": "In linea",
+          "degraded": "Degradato",
+          "offline": "Non in linea"
+        },
+        "probe": {
+          "ok": "Risposta ricevuta",
+          "failed": "Nessuna risposta",
+          "pending": "In attesa dell’agente"
+        },
+        "snmp": {
+          "ok": "Interrogazione in corso",
+          "failing": "In errore",
+          "no_template": "Nessun modello",
+          "no_agent": "Nessun agente nella sede",
+          "asset_moved": "Risorsa spostata",
+          "never_polled": "Mai interrogato"
+        },
+        "snmpFailures": "{{count}} errori consecutivi",
+        "snmpNote": "Un errore SNMP può riguardare l’agente di collegamento anziché il dispositivo — gli errori vengono conteggiati quando viene inviata l’interrogazione.",
+        "scan": {
+          "seen": "Rilevato",
+          "missed": "Non rilevato"
+        },
+        "emptyTitle": "Nessuna segnalazione per questo dispositivo",
+        "emptyDescription": "Nessuna scansione, verifica, interrogazione o sonda manuale ha ancora prodotto un’osservazione."
+      },
+      "state": {
+        "responding": "Risponde",
+        "notResponding": "Non risponde",
+        "unverified": "Non verificato"
+      },
+      "source": {
+        "networkCheck": "Verifica di rete",
+        "probe": "Sonda",
+        "scan": "Scansione",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "ultima rilevazione tramite {{source}} {{relative}}",
+      "neverObserved": "mai osservato"
+    },
+    "collection": {
+      "viewOids": "Visualizza OID",
+      "oidState": {
+        "collecting": "Raccolta in corso",
+        "unsupported": "Non supportato",
+        "stale": "Obsoleto",
+        "neverPolled": "Mai interrogato",
+        "unknown": "Sconosciuto"
+      },
+      "unknownNeedsAgentUpdate": "Questa versione dell’agente non può leggere i valori delle tabelle. Aggiorna l’agente sul dispositivo ponte.",
+      "partialRows": "Risultati parziali: la scansione ha raggiunto il limite di righe.",
+      "unsupportedWithCode": "Il dispositivo ha risposto {{code}} — questo OID non è implementato sul dispositivo.",
+      "status": {
+        "ok": "Interrogazione in corso",
+        "failing": "In errore",
+        "noTemplate": "Nessun modello",
+        "noAgent": "Nessun agente nella sede",
+        "assetMoved": "Risorsa spostata",
+        "neverPolled": "Mai interrogato",
+        "paused": "In pausa",
+        "notConfigured": "Non configurato"
+      },
+      "count": {
+        "collecting": "{{count}} in raccolta",
+        "unsupported": "{{count}} non supportati",
+        "stale": "{{count}} obsoleti",
+        "unknown": "{{count}} sconosciuti",
+        "neverPolled": "{{count}} mai interrogati",
+        "noOids": "Nessun OID in questo modello"
+      }
+    },
+    "health": {
+      "empty": {
+        "title": "Non è ancora attivo alcun monitoraggio",
+        "action": "Configura il monitoraggio",
+        "benefit": {
+          "printer": "Attiva SNMP per visualizzare i livelli di toner e inchiostro, i vassoi della carta, i contatori delle pagine e gli errori della stampante.",
+          "switch": "Attiva SNMP per visualizzare lo stato delle interfacce, il traffico per porta e il tempo di attività.",
+          "generic": "Attiva SNMP per raccogliere dati sullo stato di questo dispositivo oppure aggiungi un controllo ping o di porta."
+        }
+      },
+      "noTemplate": "SNMP è attivo, ma non è assegnato alcun modello, quindi non viene interrogato nulla.",
+      "pickTemplate": "Scegli un modello",
+      "viewAllOids": "Visualizza tutti i {{count}} OID"
+    },
+    "printer": {
+      "low": "Basso",
+      "supplyFallback": "Materiale di consumo {{instance}}",
+      "pageCount": "Pagine totali",
+      "sinceYesterday": "{{count}} da ieri",
+      "sinceLastWeek": "{{count}} nell’ultima settimana",
+      "notCollectedYet": "I dati sullo stato della stampante non sono ancora stati raccolti.",
+      "status": {
+        "other": "Altro",
+        "unknown": "Sconosciuto",
+        "idle": "In attesa",
+        "printing": "Stampa in corso",
+        "warmup": "Riscaldamento"
+      },
+      "deviceStatus": {
+        "unknown": "Sconosciuto",
+        "running": "In funzione",
+        "warning": "Avviso",
+        "testing": "Test in corso",
+        "down": "Fuori servizio"
+      },
+      "errors": {
+        "lowPaper": "Carta in esaurimento",
+        "noPaper": "Carta esaurita",
+        "lowToner": "Toner in esaurimento",
+        "noToner": "Toner esaurito",
+        "doorOpen": "Sportello aperto",
+        "jammed": "Carta inceppata",
+        "offline": "Non in linea",
+        "serviceRequested": "Assistenza necessaria",
+        "inputTrayMissing": "Vassoio di alimentazione mancante",
+        "outputTrayMissing": "Vassoio di uscita mancante",
+        "markerSupplyMissing": "Materiale di consumo mancante",
+        "outputNearFull": "Vassoio di uscita quasi pieno",
+        "outputFull": "Vassoio di uscita pieno",
+        "inputTrayEmpty": "Vassoio di alimentazione vuoto",
+        "overduePreventMaint": "Manutenzione scaduta"
+      }
+    },
+    "charts": {
+      "loadFailed": "Impossibile caricare la cronologia di questa metrica.",
+      "pickOids": "Grafico",
+      "cap": "È visualizzato il massimo di {{count}} grafici. Deselezionane uno per aggiungerne un altro.",
+      "perBucket": "Variazione per {{bucket}}",
+      "bucket": {
+        "fiveMinutes": "5 minuti",
+        "hour": "ora",
+        "day": "giorno"
+      },
+      "emptyTitle": "Nessun OID sta ancora raccogliendo valori",
+      "emptyDescription": "La cronologia appare quando un polling restituisce un valore per almeno un OID.",
+      "truncated": "Vengono mostrate solo le prime 64 serie di istanze."
+    },
+    "poll": {
+      "everySeconds": "ogni {{count}} s",
+      "everyMinutes": "ogni {{count}} min",
+      "everyHours": "ogni {{count}} h"
+    },
+    "checks": {
+      "emptyTitle": "Nessun controllo di rete per questo dispositivo",
+      "emptyDescription": "Un controllo ping o di porta determina la raggiungibilità di questo dispositivo indipendentemente dalla scansione di rilevamento.",
+      "add": "Aggiungi un controllo",
+      "paused": "In pausa",
+      "status": {
+        "online": "In linea",
+        "degraded": "Degradato",
+        "offline": "Non in linea",
+        "never": "Mai controllato"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "Nessun avviso di soglia SNMP configurato",
+      "emptyDescription": "I valori rilevati su questo dispositivo non genereranno ancora alcun avviso."
+    },
+    "loadingMonitoring": "Caricamento dei dati di monitoraggio…"
   },
   "osIcons": {
     "linux": "Linux",

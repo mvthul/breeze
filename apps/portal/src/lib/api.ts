@@ -734,6 +734,7 @@ export interface BrandingConfig {
   enableTickets?: boolean;
   enableAssetCheckout?: boolean;
   enableSelfService?: boolean;
+  enableDevices?: boolean;
   enablePasswordReset?: boolean;
   enableDashboard?: boolean;
   enableSecurity?: boolean;

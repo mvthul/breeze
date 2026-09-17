@@ -71,28 +71,66 @@ pub struct BannerShowRequest {
 
 /// Payload emitted to the consent window's React frontend. Empty agent-supplied
 /// strings become `null` so the UI can branch on presence.
-#[derive(Debug, Serialize)]
-struct ConsentRequestEvent<'a> {
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConsentRequestEvent {
     #[serde(rename = "sessionId")]
-    session_id: &'a str,
+    pub session_id: String,
     #[serde(rename = "technicianName")]
-    technician_name: &'a str,
+    pub technician_name: String,
     #[serde(rename = "technicianEmail")]
-    technician_email: Option<&'a str>,
+    pub technician_email: Option<String>,
     #[serde(rename = "orgName")]
-    org_name: Option<&'a str>,
+    pub org_name: Option<String>,
     #[serde(rename = "timeoutMs")]
-    timeout_ms: i64,
+    pub timeout_ms: i64,
     #[serde(rename = "onTimeout")]
-    on_timeout: Option<&'a str>,
+    pub on_timeout: Option<String>,
 }
 
 /// Payload emitted to the banner window's React frontend.
-#[derive(Debug, Serialize)]
-struct BannerShowEvent<'a> {
-    label: &'a str,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BannerShowEvent {
+    pub label: String,
     #[serde(rename = "startedAt")]
-    started_at: i64,
+    pub started_at: i64,
+}
+
+static PENDING_CONSENT: Mutex<Option<ConsentRequestEvent>> = Mutex::new(None);
+static PENDING_BANNER: Mutex<Option<BannerShowEvent>> = Mutex::new(None);
+
+pub fn get_pending_consent() -> Option<ConsentRequestEvent> {
+    PENDING_CONSENT.lock().ok().and_then(|guard| guard.clone())
+}
+
+pub fn clear_pending_consent() {
+    if let Ok(mut guard) = PENDING_CONSENT.lock() {
+        *guard = None;
+    }
+}
+
+pub fn get_pending_banner() -> Option<BannerShowEvent> {
+    PENDING_BANNER.lock().ok().and_then(|guard| guard.clone())
+}
+
+pub fn clear_pending_banner() {
+    if let Ok(mut guard) = PENDING_BANNER.lock() {
+        *guard = None;
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_system_data_dir<R: tauri::Runtime>(
+    builder: WebviewWindowBuilder<R>,
+) -> WebviewWindowBuilder<R> {
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    if local.to_lowercase().contains("systemprofile") || local.is_empty() {
+        let pd = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
+        let data_dir = std::path::PathBuf::from(pd).join("Breeze").join("helper-webview");
+        if std::fs::create_dir_all(&data_dir).is_ok() {
+            return builder.data_directory(data_dir);
+        }
+    }
+    builder
 }
 
 fn none_if_empty(s: &str) -> Option<&str> {
@@ -162,16 +200,29 @@ impl ConsentBridge {
 /// `inner_size(380,300).center().decorations(false).always_on_top(true)
 ///  .focused(true).skip_taskbar(true)`.
 pub fn show_consent_window(app: &AppHandle, req: &ConsentRequest) {
+    let event = ConsentRequestEvent {
+        session_id: req.session_id.clone(),
+        technician_name: req.technician_name.clone(),
+        technician_email: none_if_empty(&req.technician_email).map(|s| s.to_string()),
+        org_name: none_if_empty(&req.org_name).map(|s| s.to_string()),
+        timeout_ms: req.timeout_ms,
+        on_timeout: none_if_empty(&req.on_timeout).map(|s| s.to_string()),
+    };
+
+    if let Ok(mut guard) = PENDING_CONSENT.lock() {
+        *guard = Some(event.clone());
+    }
+
     if let Some(win) = app.get_webview_window(CONSENT_WINDOW_LABEL) {
         // Already open (e.g. a re-prompt): re-emit and refocus rather than
         // building a duplicate window (Tauri errors on a duplicate label).
         let _ = win.show();
         let _ = win.set_focus();
-        emit_consent_request(app, req);
+        emit_consent_request(app, &event);
         return;
     }
 
-    let builder = WebviewWindowBuilder::new(
+    let mut builder = WebviewWindowBuilder::new(
         app,
         CONSENT_WINDOW_LABEL,
         WebviewUrl::App("index.html#consent".into()),
@@ -183,30 +234,30 @@ pub fn show_consent_window(app: &AppHandle, req: &ConsentRequest) {
     .always_on_top(true)
     .focused(true)
     .skip_taskbar(true)
-    .resizable(false);
+    .resizable(false)
+    .transparent(true)
+    .shadow(false);
+
+    #[cfg(target_os = "windows")]
+    {
+        builder = apply_system_data_dir(builder);
+    }
 
     match builder.build() {
-        Ok(_win) => emit_consent_request(app, req),
+        Ok(_win) => emit_consent_request(app, &event),
         Err(e) => eprintln!("[helper] failed to create consent window: {}", e),
     }
 }
 
-fn emit_consent_request(app: &AppHandle, req: &ConsentRequest) {
-    let event = ConsentRequestEvent {
-        session_id: &req.session_id,
-        technician_name: &req.technician_name,
-        technician_email: none_if_empty(&req.technician_email),
-        org_name: none_if_empty(&req.org_name),
-        timeout_ms: req.timeout_ms,
-        on_timeout: none_if_empty(&req.on_timeout),
-    };
-    if let Err(e) = app.emit("consent-request", &event) {
+fn emit_consent_request(app: &AppHandle, event: &ConsentRequestEvent) {
+    if let Err(e) = app.emit("consent-request", event) {
         eprintln!("[helper] failed to emit consent-request: {}", e);
     }
 }
 
 /// Close the consent window (after a decision is submitted, or to dismiss it).
 pub fn close_consent_window(app: &AppHandle) {
+    clear_pending_consent();
     if let Some(win) = app.get_webview_window(CONSENT_WINDOW_LABEL) {
         if let Err(e) = win.close() {
             eprintln!("[helper] failed to close consent window: {}", e);
@@ -221,16 +272,25 @@ pub fn close_consent_window(app: &AppHandle) {
 /// `inner_size(360,52)`, top-center, `transparent(true).decorations(false)
 ///  .always_on_top(true).skip_taskbar(true).focused(false)`.
 pub fn show_banner_window(app: &AppHandle, req: &BannerShowRequest) {
+    let event = BannerShowEvent {
+        label: req.label.clone(),
+        started_at: req.started_at_unix_ms,
+    };
+
+    if let Ok(mut guard) = PENDING_BANNER.lock() {
+        *guard = Some(event.clone());
+    }
+
     if let Some(win) = app.get_webview_window(BANNER_WINDOW_LABEL) {
         let _ = win.show();
-        emit_banner_show(app, req);
+        emit_banner_show(app, &event);
         return;
     }
 
     const BANNER_W: f64 = 360.0;
     const BANNER_H: f64 = 52.0;
 
-    let builder = WebviewWindowBuilder::new(
+    let mut builder = WebviewWindowBuilder::new(
         app,
         BANNER_WINDOW_LABEL,
         WebviewUrl::App("index.html#banner".into()),
@@ -246,15 +306,20 @@ pub fn show_banner_window(app: &AppHandle, req: &BannerShowRequest) {
     // `transparent`/`shadow(false)` give the banner its floating pill look.
     // `macos-private-api` is enabled in Cargo.toml + tauri.conf.json so
     // transparency works on macOS too (Helper is self-distributed, not App Store).
-    let builder = builder.transparent(true).shadow(false);
+    builder = builder.transparent(true).shadow(false);
 
-    let builder = match primary_top_center(app, BANNER_W, BANNER_H) {
+    let mut builder = match primary_top_center(app, BANNER_W, BANNER_H) {
         Some((x, y)) => builder.position(x, y),
         None => builder.center(),
     };
 
+    #[cfg(target_os = "windows")]
+    {
+        builder = apply_system_data_dir(builder);
+    }
+
     match builder.build() {
-        Ok(_win) => emit_banner_show(app, req),
+        Ok(_win) => emit_banner_show(app, &event),
         Err(e) => eprintln!("[helper] failed to create session banner window: {}", e),
     }
 }
@@ -274,18 +339,15 @@ fn primary_top_center(app: &AppHandle, w: f64, h: f64) -> Option<(f64, f64)> {
     Some((x, y))
 }
 
-fn emit_banner_show(app: &AppHandle, req: &BannerShowRequest) {
-    let event = BannerShowEvent {
-        label: &req.label,
-        started_at: req.started_at_unix_ms,
-    };
-    if let Err(e) = app.emit("banner-show", &event) {
+fn emit_banner_show(app: &AppHandle, event: &BannerShowEvent) {
+    if let Err(e) = app.emit("banner-show", event) {
         eprintln!("[helper] failed to emit banner-show: {}", e);
     }
 }
 
 /// Close the session banner window (on `banner_hide`).
 pub fn hide_banner_window(app: &AppHandle) {
+    clear_pending_banner();
     if let Some(win) = app.get_webview_window(BANNER_WINDOW_LABEL) {
         if let Err(e) = win.close() {
             eprintln!("[helper] failed to close session banner window: {}", e);
