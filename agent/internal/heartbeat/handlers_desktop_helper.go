@@ -493,8 +493,13 @@ func (h *Heartbeat) startDesktopOnDemand(sessionID, targetSession string, req ip
 // session only when allowDisconnected is true.
 func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...bool) *sessionbroker.Session {
 	session := h.sessionBroker.FindCapableSession("capture", targetSession)
-	if runtime.GOOS == "darwin" {
-		if preferred := h.sessionBroker.PreferredDesktopSession(); preferred != nil {
+	// Desktop selection has stricter semantics than a generic "capture" scope:
+	// on Windows both a SYSTEM and an interactive user helper can be attached to
+	// the console. PreferredDesktopSession applies the role/context ordering
+	// needed for the normal user desktop. Keep a pinned WTS target authoritative.
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		if preferred := h.sessionBroker.PreferredDesktopSession(); preferred != nil &&
+			(targetSession == "" || preferred.WinSessionID == targetSession) {
 			session = preferred
 		}
 	}
@@ -531,7 +536,7 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 		if session.WinSessionID == consoleID && !isWinSessionDisconnected(session.WinSessionID) {
 			log.Info("findActiveHelper: picked console session directly",
 				"winSession", session.WinSessionID, "helperSession", session.SessionID,
-				"consoleID", consoleID)
+				"helperRole", session.HelperRole, "consoleID", consoleID)
 			return session
 		}
 
