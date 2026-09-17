@@ -9,6 +9,46 @@ on:
         default: 'main'
 
 jobs:
+  build-agent-windows:
+    name: Build Breeze Agent (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: false
+
+      - name: Build agent and user helper
+        working-directory: agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          go mod download
+          scripts/build-edition.sh --edition self-host --component agent \
+            --goos windows --goarch amd64 --version dev \
+            --out ../breeze-agent-windows-amd64.exe
+          scripts/build-edition.sh --edition self-host --component user-helper \
+            --goos windows --goarch amd64 --version dev --windowsgui \
+            --out ../breeze-user-helper-windows-amd64.exe
+
+      - name: Upload Agent
+        uses: actions/upload-artifact@v4
+        with:
+          name: breeze-agent-windows
+          path: breeze-agent-windows-amd64.exe
+
+      - name: Upload User Helper
+        uses: actions/upload-artifact@v4
+        with:
+          name: breeze-user-helper-windows
+          path: breeze-user-helper-windows-amd64.exe
+
   build-helper-windows:
     name: Build Breeze Helper (Windows)
     runs-on: windows-latest
