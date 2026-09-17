@@ -1,0 +1,94 @@
+name: Build Windows Artifacts (Helper & Viewer)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or commit'
+        required: true
+        default: 'main'
+
+jobs:
+  build-helper-windows:
+    name: Build Breeze Helper (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '10.34.5'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri helper
+        working-directory: apps/helper
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ''
+        run: pnpm tauri build --target x86_64-pc-windows-msvc
+
+      - name: Upload Helper MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: breeze-helper-windows-msi
+          path: apps/helper/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+
+      - name: Upload Helper EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: breeze-helper-windows-exe
+          path: apps/helper/src-tauri/target/x86_64-pc-windows-msvc/release/breeze-helper.exe
+
+  build-viewer-windows:
+    name: Build Breeze Viewer (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '10.34.5'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Viewer frontend
+        working-directory: apps/viewer
+        run: pnpm build
+
+      - name: Build Tauri Viewer binary
+        working-directory: apps/viewer/src-tauri
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Upload Viewer EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: breeze-viewer-windows-exe
+          path: apps/viewer/src-tauri/target/x86_64-pc-windows-msvc/release/breeze-viewer.exe
