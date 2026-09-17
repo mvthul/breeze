@@ -487,6 +487,21 @@ func tryHardware(cfg EncoderConfig) encoderBackend {
 	factories := append([]taggedFactory(nil), hardwareFactories...)
 	hardwareFactoriesMu.Unlock()
 
+	// On hybrid Windows systems the Intel iGPU is often the intended
+	// QuickSync target even when an NVIDIA dGPU is also present. The generic
+	// MFT factory is the Windows QuickSync path; avoid selecting a direct
+	// vendor-specific dGPU factory before it gets a chance to initialize.
+	if cfg.GPUVendor == "intel" {
+		for _, tf := range factories {
+			if tf.vendor == "" {
+				backend, err := tf.factory(cfg)
+				if err == nil && backend != nil {
+					return backend
+				}
+			}
+		}
+	}
+
 	// First pass: try vendor-specific factories matching GPUVendor
 	if cfg.GPUVendor != "" {
 		for _, tf := range factories {
