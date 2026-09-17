@@ -350,7 +350,31 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	}
 
 	if err := enc.SetDimensions(w, h); err != nil {
-		return "", fmt.Errorf("failed to set encoder dimensions: %w", err)
+		// Hardware MFT capability failures are deterministic for this adapter and
+		// resolution. Do not start a session that will retry the same COM
+		// negotiation on every frame; replace it with the universal OpenH264
+		// backend before WebRTC starts.
+		if !enc.BackendIsHardware() {
+			return "", fmt.Errorf("failed to set encoder dimensions: %w", err)
+		}
+		slog.Warn("Hardware encoder initialization failed; selecting OpenH264 fallback",
+			"session", sessionID, "backend", enc.BackendName(), "error", err.Error())
+		enc.Close()
+		enc, err = NewVideoEncoder(EncoderConfig{
+			Codec:          CodecH264,
+			Quality:        QualityAuto,
+			Bitrate:        initBitrate,
+			FPS:            maxFrameRate,
+			PreferHardware: false,
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to create OpenH264 fallback: %w", err)
+		}
+		if err := enc.SetDimensions(w, h); err != nil {
+			enc.Close()
+			return "", fmt.Errorf("failed to set OpenH264 fallback dimensions: %w", err)
+		}
+		session.encoder.Store(enc)
 	}
 
 	// If the capturer produces BGRA, tell the encoder to skip BGRA→RGBA conversion

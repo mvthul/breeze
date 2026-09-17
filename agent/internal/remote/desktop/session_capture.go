@@ -419,6 +419,10 @@ func (s *Session) captureLoopDXGI() captureMode {
 				if w, h, err := newCap.GetScreenBounds(); err == nil {
 					if dimErr := enc.SetDimensions(w, h); dimErr != nil {
 						slog.Warn("Failed to set encoder dimensions after monitor switch", "session", s.id, "error", dimErr.Error())
+						if enc.BackendIsHardware() {
+							slog.Warn("Hardware encoder renegotiation failed after monitor switch; selecting software fallback", "session", s.id, "backend", enc.BackendName())
+							s.swapToSoftwareEncoder()
+						}
 					}
 					if kfErr := enc.ForceKeyframe(); kfErr != nil {
 						slog.Warn("Failed to force keyframe after monitor switch", "session", s.id, "error", kfErr.Error())

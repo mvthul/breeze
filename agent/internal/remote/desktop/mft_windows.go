@@ -62,7 +62,8 @@ type mftEncoder struct {
 	startTime time.Time
 
 	// Thread affinity
-	threadLocked bool
+	threadLocked   bool
+	comInitialized bool
 
 	// Pixel format of incoming frames
 	pixelFormat PixelFormat
@@ -175,93 +176,34 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	// COM init
 	hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
 	if int32(hr) < 0 && uint32(hr) != 0x80010106 { // ignore RPC_E_CHANGED_MODE
+		runtime.UnlockOSThread()
+		m.threadLocked = false
 		return fmt.Errorf("CoInitializeEx failed: 0x%08X", uint32(hr))
 	}
+	m.comInitialized = int32(hr) >= 0
 
 	// MFStartup
 	hr, _, _ = procMFStartup.Call(mfVersion, mfStartupFull)
 	if int32(hr) < 0 {
+		m.abortFailedInitialization(0, false)
 		return fmt.Errorf("MFStartup failed: 0x%08X", uint32(hr))
 	}
 
-	// Find H264 encoder — try hardware first
-	transform, isHW, err := m.findEncoder(width, height)
+	// Select and configure a hardware H264 encoder as one transaction.  Intel
+	// Quick Sync publishes several activations on some driver versions; an
+	// activation is not usable until its actual media types have negotiated.
+	transform, err := m.findAndConfigureHardwareEncoder(width, height)
 	if err != nil {
-		procMFShutdown.Call()
+		m.abortFailedInitialization(0, true)
 		return fmt.Errorf("no H264 encoder found: %w", err)
 	}
+	isHW := true
 
-	// Hardware MFTs are async and must be unlocked before configuration.
-	// Without this, SetOutputType/SetInputType return MF_E_TRANSFORM_ASYNC_LOCKED.
-	if isHW {
-		if err := m.unlockAsyncMFT(transform); err != nil {
-			slog.Warn("Failed to unlock async MFT, falling back to software", "error", err.Error())
-			comRelease(transform)
-			transform, err = m.enumAndActivate(
-				mftEnumFlagSyncMFT|mftEnumFlagSortAndFilter,
-				&mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatNV12},
-				&mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatH264},
-			)
-			if err != nil {
-				procMFShutdown.Call()
-				return fmt.Errorf("software MFT fallback after async unlock failure: %w", err)
-			}
-			isHW = false
-		}
-	}
-
-	// Zero-copy input: install the DXGI device manager BEFORE media-type
-	// negotiation (per MF guidance for D3D-aware MFTs) so the hardware MFT can
-	// accept DXGI-surface samples. Only attempted for hardware MFTs with a
-	// capture-provided D3D11 device; requires the async event handshake to
-	// actually work (verified after init — torn down if the MFT turns out to
-	// be synchronous). gpuFailed persists across re-inits so a downgraded
-	// session doesn't retry a broken GPU pipeline.
-	if isHW && m.d3d11Device != 0 && !m.gpuFailed {
+	// Attach DXGI only after a candidate has completed CPU/NV12 media-type
+	// negotiation. This keeps a failed candidate from leaving device-manager
+	// state behind and makes the CPU-NV12 path a reliable baseline.
+	if m.d3d11Device != 0 && !m.gpuFailed {
 		m.tryInitGPUPipeline(transform)
-	}
-
-	// Configure output type (H264) — must be set BEFORE input
-	if err := m.setOutputType(transform, width, height); err != nil {
-		comRelease(transform)
-		procMFShutdown.Call()
-		return fmt.Errorf("set output type: %w", err)
-	}
-
-	// Configure input type (NV12)
-	if err := m.setInputType(transform, width, height); err != nil {
-		// Hardware encoder may reject this format — fall back to software MFT
-		if isHW {
-			// The DXGI manager was installed on the hardware transform being
-			// discarded; the software MFT must not inherit zero-copy state.
-			if m.dxgiManager != 0 {
-				comRelease(m.dxgiManager)
-				m.dxgiManager = 0
-			}
-			m.useDXGISamples = false
-			comRelease(transform)
-			slog.Warn("Hardware MFT rejected input type, falling back to software", "error", err.Error())
-			transform, err = m.enumAndActivate(mftEnumFlagSyncMFT|mftEnumFlagSortAndFilter, &mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatNV12}, &mftRegisterTypeInfo{mfMediaTypeVideo, mfVideoFormatH264})
-			if err != nil {
-				procMFShutdown.Call()
-				return fmt.Errorf("software MFT fallback failed: %w", err)
-			}
-			isHW = false
-			if err := m.setOutputType(transform, width, height); err != nil {
-				comRelease(transform)
-				procMFShutdown.Call()
-				return fmt.Errorf("set output type (software fallback): %w", err)
-			}
-			if err := m.setInputType(transform, width, height); err != nil {
-				comRelease(transform)
-				procMFShutdown.Call()
-				return fmt.Errorf("set input type (software fallback): %w", err)
-			}
-		} else {
-			comRelease(transform)
-			procMFShutdown.Call()
-			return fmt.Errorf("set input type: %w", err)
-		}
 	}
 
 	// Enable low-latency mode
@@ -453,8 +395,41 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	return nil
 }
 
-// findEncoder enumerates MFT encoders, trying hardware first.
-func (m *mftEncoder) findEncoder(width, height int) (uintptr, bool, error) {
+// abortFailedInitialization balances the COM/MF setup when a hardware
+// candidate is rejected before m.inited becomes true. Without this, a failed
+// high-resolution negotiation leaves the capture goroutine pinned and causes
+// subsequent sessions to inherit incomplete Media Foundation state.
+func (m *mftEncoder) abortFailedInitialization(transform uintptr, mfStarted bool) {
+	if transform != 0 {
+		comRelease(transform)
+	}
+	if m.dxgiManager != 0 {
+		comRelease(m.dxgiManager)
+		m.dxgiManager = 0
+	}
+	m.useDXGISamples = false
+	if mfStarted {
+		procMFShutdown.Call()
+	}
+	if m.comInitialized {
+		procCoUninitialize.Call()
+		m.comInitialized = false
+	}
+	// This helper is only called synchronously from initialize, on the same
+	// capture goroutine that called LockOSThread.
+	if m.threadLocked {
+		runtime.UnlockOSThread()
+	}
+	m.threadLocked = false
+}
+
+// findAndConfigureHardwareEncoder enumerates every hardware activation and
+// accepts one only after it has negotiated NV12 input and H264 output. MFTEnumEx
+// registrations are advisory: hybrid-GPU machines frequently enumerate an
+// encoder that belongs to an inactive adapter or that rejects the requested
+// resolution. Keeping every attempt self-contained avoids poisoning the next
+// candidate with an incomplete COM/DXGI configuration.
+func (m *mftEncoder) findAndConfigureHardwareEncoder(width, height int) (uintptr, error) {
 	inputType := mftRegisterTypeInfo{
 		guidMajorType: mfMediaTypeVideo,
 		guidSubtype:   mfVideoFormatNV12,
@@ -464,34 +439,79 @@ func (m *mftEncoder) findEncoder(width, height int) (uintptr, bool, error) {
 		guidSubtype:   mfVideoFormatH264,
 	}
 
-	// Hardware only — software H264 encoding is handled by OpenH264 which
-	// provides deterministic 1-in-1-out encoding. The Windows software MFT
-	// stalls for 20-60 frames on Server editions and is not officially
-	// supported (Microsoft docs: "Minimum supported server: None supported").
-	// Do not pass the media types to MFTEnumEx on the first attempt. Several
-	// Intel driver versions advertise the H264 encoder without publishing the
-	// exact NV12 input type until after activation. Supplying the type filter
-	// makes MFTEnumEx report zero candidates even though the hardware encoder
-	// exists. Media-type negotiation below remains authoritative and rejects
-	// candidates that cannot actually encode this stream.
-	transform, err := m.enumAndActivate(
-		mftEnumFlagHardware|mftEnumFlagSortAndFilter,
-		nil, nil,
-	)
-	if err != nil {
-		// Keep the typed query as a compatibility fallback for drivers that only
-		// expose their encoder through the subtype-filtered enumeration path.
-		transform, err = m.enumAndActivate(
-			mftEnumFlagHardware|mftEnumFlagSortAndFilter,
-			&inputType, &outputType,
-		)
-	}
-	if err == nil {
-		slog.Info("Hardware MFT candidate activated", "width", width, "height", height)
-		return transform, true, nil
+	flags := uint32(mftEnumFlagHardware | mftEnumFlagSortAndFilter)
+	if transform, err := m.configureEnumeratedHardwareCandidates(flags, nil, nil, width, height); err == nil {
+		return transform, nil
+	} else {
+		slog.Warn("Untyped hardware MFT enumeration did not negotiate an encoder", "error", err.Error())
 	}
 
-	return 0, false, fmt.Errorf("no hardware H264 encoder available (software encoding handled by OpenH264)")
+	// Some drivers expose only typed registrations. This is deliberately a
+	// second enumeration rather than a second configuration pass over a stale
+	// transform, so each candidate starts in a clean state.
+	transform, err := m.configureEnumeratedHardwareCandidates(flags, &inputType, &outputType, width, height)
+	if err != nil {
+		return 0, fmt.Errorf("no hardware H264 encoder negotiated (software encoding handled by OpenH264): %w", err)
+	}
+	return transform, nil
+}
+
+func (m *mftEncoder) configureEnumeratedHardwareCandidates(flags uint32, inputType, outputType *mftRegisterTypeInfo, width, height int) (uintptr, error) {
+	ppActivate, count, hr := enumerateMFTActivationArray(flags, inputType, outputType)
+	if int32(hr) < 0 || count == 0 {
+		return 0, fmt.Errorf("MFTEnumEx found %d encoders (flags=0x%X, HRESULT=0x%08X)", count, flags, uint32(hr))
+	}
+	defer releaseMFTActivations(ppActivate, count)
+
+	activations := unsafe.Slice((*uintptr)(unsafe.Pointer(ppActivate)), count)
+	var lastErr error
+	for index, activate := range activations {
+		if activate == 0 {
+			lastErr = fmt.Errorf("candidate %d has a nil activation", index)
+			continue
+		}
+
+		var transform uintptr
+		_, err := comCall(activate, vtblActivateObject,
+			uintptr(unsafe.Pointer(&iidIMFTransform)),
+			uintptr(unsafe.Pointer(&transform)),
+		)
+		if err != nil || transform == 0 {
+			if err == nil {
+				err = fmt.Errorf("ActivateObject returned a nil transform")
+			}
+			lastErr = err
+			slog.Debug("MFT candidate activation rejected", "candidate", index, "candidates", count, "error", err.Error())
+			continue
+		}
+
+		err = m.configureHardwareCandidate(transform, width, height)
+		if err == nil {
+			slog.Info("Hardware MFT candidate negotiated", "candidate", index, "candidates", count,
+				"inputType", "NV12", "width", width, "height", height)
+			return transform, nil
+		}
+		comRelease(transform)
+		lastErr = err
+		slog.Warn("Hardware MFT candidate rejected", "candidate", index, "candidates", count,
+			"inputType", "NV12", "negotiationOrder", "input-then-output", "fallbackReason", err.Error())
+	}
+
+	return 0, fmt.Errorf("none of %d hardware MFT candidates negotiated: %w", count, lastErr)
+}
+
+func (m *mftEncoder) configureHardwareCandidate(transform uintptr, width, height int) error {
+	// Hardware MFTs are async and must be unlocked before configuration.
+	if err := m.unlockAsyncMFT(transform); err != nil {
+		return fmt.Errorf("async unlock: %w", err)
+	}
+	if err := m.setInputType(transform, width, height); err != nil {
+		return fmt.Errorf("set NV12 input type: %w", err)
+	}
+	if err := m.setNegotiatedOutputType(transform, width, height); err != nil {
+		return fmt.Errorf("set H264 output type: %w", err)
+	}
+	return nil
 }
 
 func (m *mftEncoder) enumAndActivate(flags uint32, inputType, outputType *mftRegisterTypeInfo) (uintptr, error) {
@@ -582,7 +602,56 @@ func enumerateMFTActivations(flags uint32, inputType, outputType *mftRegisterTyp
 	return count, hr
 }
 
-func (m *mftEncoder) setOutputType(transform uintptr, width, height int) error {
+// setNegotiatedOutputType prefers the H264 types advertised by the driver.
+// Intel's hardware MFT rejects a blank, application-constructed output type
+// on recent drivers even when every individual attribute looks valid. Starting
+// with its advertised type preserves driver-owned profile and level choices.
+func (m *mftEncoder) setNegotiatedOutputType(transform uintptr, width, height int) error {
+	var lastErr error
+	for index := uintptr(0); ; index++ {
+		var mediaType uintptr
+		_, err := comCall(transform, vtblGetOutputAvailType, 0, index, uintptr(unsafe.Pointer(&mediaType)))
+		if err != nil {
+			if index == 0 {
+				lastErr = fmt.Errorf("GetOutputAvailableType[0]: %w", err)
+			}
+			break
+		}
+		if mediaType == 0 {
+			lastErr = fmt.Errorf("GetOutputAvailableType[%d] returned nil", index)
+			continue
+		}
+
+		err = m.configureOutputMediaType(mediaType, width, height)
+		if err == nil {
+			_, err = comCall(transform, vtblSetOutputType, 0, mediaType, 0)
+		}
+		comRelease(mediaType)
+		if err == nil {
+			slog.Info("MFT H264 output type negotiated", "outputTypeIndex", index,
+				"outputSubtype", "H264", "negotiationOrder", "driver-advertised")
+			return nil
+		}
+		lastErr = fmt.Errorf("driver output type %d: %w", index, err)
+		slog.Debug("MFT H264 output type rejected", "outputTypeIndex", index,
+			"outputSubtype", "H264", "hresult", err.Error())
+	}
+
+	// Some older MFTs do not expose output types before streaming. Retain a
+	// generic H264 fallback, but deliberately do not force a profile: the
+	// encoder selects the valid profile/level for this resolution.
+	if err := m.setGenericOutputType(transform, width, height); err == nil {
+		slog.Info("MFT H264 output type negotiated", "outputTypeIndex", "generic",
+			"outputSubtype", "H264", "negotiationOrder", "generic-fallback")
+		return nil
+	} else if lastErr != nil {
+		return fmt.Errorf("driver-advertised types rejected (%w); generic fallback: %w", lastErr, err)
+	} else {
+		return fmt.Errorf("generic fallback: %w", err)
+	}
+}
+
+func (m *mftEncoder) setGenericOutputType(transform uintptr, width, height int) error {
 	var mediaType uintptr
 	hr, _, _ := procMFCreateMediaType.Call(uintptr(unsafe.Pointer(&mediaType)))
 	if int32(hr) < 0 {
@@ -606,61 +675,7 @@ func (m *mftEncoder) setOutputType(transform uintptr, width, height int) error {
 		return err
 	}
 
-	// Bitrate
-	if _, err := comCall(mediaType, vtblSetUINT32,
-		uintptr(unsafe.Pointer(&mfMTAvgBitrate)),
-		uintptr(uint32(m.cfg.Bitrate)),
-	); err != nil {
-		return err
-	}
-
-	// Interlace mode = progressive
-	if _, err := comCall(mediaType, vtblSetUINT32,
-		uintptr(unsafe.Pointer(&mfMTInterlaceMode)),
-		uintptr(uint32(mfVideoInterlaceProgressive)),
-	); err != nil {
-		return err
-	}
-
-	// Frame size
-	frameSize := pack64(uint32(width), uint32(height))
-	if _, err := comCall(mediaType, vtblSetUINT64,
-		uintptr(unsafe.Pointer(&mfMTFrameSize)),
-		uintptr(frameSize),
-	); err != nil {
-		return err
-	}
-
-	// Frame rate
-	fps := m.cfg.FPS
-	if fps <= 0 {
-		fps = 30
-	}
-	frameRate := pack64(uint32(fps), 1)
-	if _, err := comCall(mediaType, vtblSetUINT64,
-		uintptr(unsafe.Pointer(&mfMTFrameRate)),
-		uintptr(frameRate),
-	); err != nil {
-		return err
-	}
-
-	// H264 profile = Main (CABAC entropy coding = 10-15% better compression than
-	// Baseline's CAVLC, critical for text clarity in screen sharing).
-	// No B-frames needed — Main profile without B-frames still enables CABAC.
-	if _, err := comCall(mediaType, vtblSetUINT32,
-		uintptr(unsafe.Pointer(&mfMTMpeg2Profile)),
-		uintptr(eAVEncH264VProfileMain),
-	); err != nil {
-		// Non-fatal: encoder will use default profile
-		slog.Debug("Failed to set Main profile", "error", err.Error())
-	}
-
-	// Pixel aspect ratio = 1:1
-	par := pack64(1, 1)
-	if _, err := comCall(mediaType, vtblSetUINT64,
-		uintptr(unsafe.Pointer(&mfMTPixelAspectRatio)),
-		uintptr(par),
-	); err != nil {
+	if err := m.configureOutputMediaType(mediaType, width, height); err != nil {
 		return err
 	}
 
@@ -673,6 +688,48 @@ func (m *mftEncoder) setOutputType(transform uintptr, width, height int) error {
 		return fmt.Errorf("SetOutputType: %w", err)
 	}
 
+	return nil
+}
+
+// configureOutputMediaType changes only stream properties required by the
+// session. It intentionally leaves codec profile and level untouched: those
+// are driver capabilities, and forcing Main profile can make Intel UHD reject
+// an otherwise supported high-resolution stream.
+func (m *mftEncoder) configureOutputMediaType(mediaType uintptr, width, height int) error {
+	if _, err := comCall(mediaType, vtblSetUINT32,
+		uintptr(unsafe.Pointer(&mfMTAvgBitrate)),
+		uintptr(uint32(m.cfg.Bitrate)),
+	); err != nil {
+		return fmt.Errorf("set bitrate: %w", err)
+	}
+	if _, err := comCall(mediaType, vtblSetUINT32,
+		uintptr(unsafe.Pointer(&mfMTInterlaceMode)),
+		uintptr(uint32(mfVideoInterlaceProgressive)),
+	); err != nil {
+		return fmt.Errorf("set progressive interlace mode: %w", err)
+	}
+	if _, err := comCall(mediaType, vtblSetUINT64,
+		uintptr(unsafe.Pointer(&mfMTFrameSize)),
+		uintptr(pack64(uint32(width), uint32(height))),
+	); err != nil {
+		return fmt.Errorf("set frame size: %w", err)
+	}
+	fps := m.cfg.FPS
+	if fps <= 0 {
+		fps = 30
+	}
+	if _, err := comCall(mediaType, vtblSetUINT64,
+		uintptr(unsafe.Pointer(&mfMTFrameRate)),
+		uintptr(pack64(uint32(fps), 1)),
+	); err != nil {
+		return fmt.Errorf("set frame rate: %w", err)
+	}
+	if _, err := comCall(mediaType, vtblSetUINT64,
+		uintptr(unsafe.Pointer(&mfMTPixelAspectRatio)),
+		uintptr(pack64(1, 1)),
+	); err != nil {
+		return fmt.Errorf("set pixel aspect ratio: %w", err)
+	}
 	return nil
 }
 
@@ -887,9 +944,9 @@ func (m *mftEncoder) SetDimensions(w, h int) error {
 	// lazy init hasn't run yet.
 	if !m.inited && m.width > 0 && m.height > 0 {
 		if err := m.initialize(m.width, m.height, m.stride); err != nil {
-			slog.Warn("Eager MFT initialization failed, will retry on first encode",
+			slog.Warn("Eager MFT initialization failed; caller must select the software fallback",
 				"error", err.Error(), "width", m.width, "height", m.height)
-			// Non-fatal: lazy init on first Encode() will retry
+			return err
 		}
 	}
 	return nil
@@ -947,7 +1004,10 @@ func (m *mftEncoder) shutdown() {
 	m.startTime = time.Now()
 
 	procMFShutdown.Call()
-	procCoUninitialize.Call()
+	if m.comInitialized {
+		procCoUninitialize.Call()
+		m.comInitialized = false
+	}
 
 	// NOTE: We intentionally do NOT call runtime.UnlockOSThread() here.
 	// LockOSThread was called from the capture goroutine via Encode→initialize.
