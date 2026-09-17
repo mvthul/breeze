@@ -79,13 +79,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build Viewer frontend
+      - name: Build Tauri Viewer
         working-directory: apps/viewer
-        run: pnpm build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ''
+        run: pnpm tauri build --target x86_64-pc-windows-msvc
 
-      - name: Build Tauri Viewer binary
-        working-directory: apps/viewer/src-tauri
-        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Upload Viewer MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: breeze-viewer-windows-msi
+          path: apps/viewer/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
 
       - name: Upload Viewer EXE
         uses: actions/upload-artifact@v4
