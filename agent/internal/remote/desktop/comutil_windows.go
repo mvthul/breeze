@@ -238,15 +238,19 @@ const (
 	vtblSetUINT64 = 22 // 3 + 19
 	vtblSetGUID   = 24 // 3 + 21
 
-	// IMFTransform vtable offsets (base 3 + method index)
-	vtblGetOutputStreamInfo = 7  // 3 + 4
-	vtblGetAttributes       = 8  // 3 + 5
-	vtblGetOutputAvailType  = 14 // 3 + 11
-	vtblSetInputType        = 15 // 3 + 12
-	vtblSetOutputType       = 16 // 3 + 13
-	vtblProcessMessage      = 23 // 3 + 20
-	vtblProcessInput        = 24 // 3 + 21
-	vtblProcessOutput       = 25 // 3 + 22
+	// IMFTransform vtable offsets. The interface has 21 methods after
+	// IUnknown, numbered 3 through 23. In particular, GetInputAvailableType
+	// and GetOutputAvailableType are slots 11 and 12; calling slot 15 with
+	// SetInputType's arguments actually calls GetInputCurrentType, which makes
+	// every hardware MFT reject its input media type.
+	vtblGetOutputStreamInfo = 7  // GetOutputStreamInfo
+	vtblGetAttributes       = 8  // GetAttributes
+	vtblGetOutputAvailType  = 12 // GetOutputAvailableType
+	vtblSetInputType        = 13 // SetInputType
+	vtblSetOutputType       = 14 // SetOutputType
+	vtblProcessMessage      = 21 // ProcessMessage
+	vtblProcessInput        = 22 // ProcessInput
+	vtblProcessOutput       = 23 // ProcessOutput
 
 	// IMFSample vtable offsets (extends IMFAttributes, base 33 + method index)
 	vtblSetSampleTime       = 36 // IMFSample: 33 + 3 (SetSampleTime)

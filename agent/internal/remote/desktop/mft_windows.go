@@ -37,12 +37,17 @@ type mftEncoder struct {
 	stride int
 
 	// COM handles (persistent across frames)
-	transform       uintptr // IMFTransform
-	codecAPI        uintptr // ICodecAPI (for dynamic bitrate), may be 0
-	inited          bool
-	isHW            bool
-	providesSamples bool // MFT allocates its own output samples
-	outputBufSize   int  // required output buffer size from GetOutputStreamInfo
+	transform uintptr // IMFTransform
+	codecAPI  uintptr // ICodecAPI (for dynamic bitrate), may be 0
+	inited    bool
+	isHW      bool
+	// hardwareCandidate stays true from construction onward. MFT media-type
+	// negotiation happens in SetDimensions, before isHW can be set. Callers
+	// must still treat a negotiation failure as a hardware-path failure so
+	// they can replace this backend with the software fallback.
+	hardwareCandidate bool
+	providesSamples   bool // MFT allocates its own output samples
+	outputBufSize     int  // required output buffer size from GetOutputStreamInfo
 
 	// Async MFT event model. Hardware MFTs (Intel QuickSync, NVENC, AMD VCE) are
 	// asynchronous: they deliver METransformNeedInput / METransformHaveOutput
@@ -122,8 +127,9 @@ func newMFTEncoder(cfg EncoderConfig) (encoderBackend, error) {
 		return nil, fmt.Errorf("no hardware H264 MFT available")
 	}
 	return &mftEncoder{
-		cfg:       cfg,
-		startTime: time.Now(),
+		cfg:               cfg,
+		hardwareCandidate: true,
+		startTime:         time.Now(),
 	}, nil
 }
 
@@ -1027,7 +1033,11 @@ func (m *mftEncoder) Name() string {
 }
 
 func (m *mftEncoder) IsHardware() bool {
-	return m.isHW
+	// isHW only becomes true after a candidate has completed media-type
+	// negotiation. Preserve the factory result as well: a failure during that
+	// negotiation is exactly when the session setup must select OpenH264 rather
+	// than treating this MFT as an already-selected software backend.
+	return m.isHW || m.hardwareCandidate
 }
 
 func (m *mftEncoder) IsPlaceholder() bool {
