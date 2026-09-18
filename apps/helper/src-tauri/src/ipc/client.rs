@@ -267,47 +267,62 @@ where
     };
 
     // --- Receive loop (session key) ---
+    //
+    // `read_frame` uses `read_exact`, which is deliberately not cancellation
+    // safe. Do not put a newly-created read_frame future directly in a
+    // `select!`: a consent decision or an idle tick could then drop it after it
+    // has consumed part of a length-prefixed frame, permanently desynchronizing
+    // this stream. Keep one pinned read future alive until its complete frame
+    // has either succeeded or failed. Splitting the stream lets consent/ping
+    // writes proceed while that read is pending.
+    let (mut read_stream, mut write_stream) = tokio::io::split(stream);
     loop {
-        let res = tokio::select! {
-            // A consent verdict from the UI: write it back to the agent as the
-            // response to the pending `consent_request` (env id `consent-<id>`).
-            Some(decision) = decision_rx.recv() => {
-                let payload = to_raw_payload(&ConsentResult { decision: decision.decision })?;
-                let resp_id = format!("consent-{}", decision.session_id);
-                write_frame(
-                    &mut stream,
-                    &session_key,
-                    &mut send_seq,
-                    &resp_id,
-                    "consent_result",
-                    Some(payload),
-                )
-                .await?;
-                continue;
-            }
-            r = tokio::time::timeout(
-                READ_IDLE_TIMEOUT,
-                read_frame(&mut stream, &session_key, &mut recv_seq),
-            ) => r,
-        };
+        let read = read_frame(&mut read_stream, &session_key, &mut recv_seq);
+        tokio::pin!(read);
+        let idle = tokio::time::sleep(READ_IDLE_TIMEOUT);
+        tokio::pin!(idle);
 
-        let env = match res {
-            // Idle: send a keepalive ping and keep listening.
-            Err(_elapsed) => {
-                write_frame(
-                    &mut stream,
-                    &session_key,
-                    &mut send_seq,
-                    "keepalive",
-                    "ping",
-                    None,
-                )
-                .await?;
-                continue;
+        let env = loop {
+            tokio::select! {
+                // A consent verdict from the UI: write it back to the agent as
+                // the response to the pending `consent_request` (env id
+                // `consent-<id>`). The pinned read continues unchanged.
+                Some(decision) = decision_rx.recv() => {
+                    let payload = to_raw_payload(&ConsentResult { decision: decision.decision })?;
+                    let resp_id = format!("consent-{}", decision.session_id);
+                    write_frame(
+                        &mut write_stream,
+                        &session_key,
+                        &mut send_seq,
+                        &resp_id,
+                        "consent_result",
+                        Some(payload),
+                    )
+                    .await?;
+                }
+                // Idle is only a keepalive cadence; it must never cancel a
+                // partially-read frame.
+                _ = &mut idle => {
+                    write_frame(
+                        &mut write_stream,
+                        &session_key,
+                        &mut send_seq,
+                        "keepalive",
+                        "ping",
+                        None,
+                    )
+                    .await?;
+                    idle.as_mut().reset(tokio::time::Instant::now() + READ_IDLE_TIMEOUT);
+                }
+                result = &mut read => {
+                    match result {
+                        Ok(env) => break env,
+                        // Transport/protocol error: bubble up so the driver
+                        // reconnects. The bridge guard clears the stale sender.
+                        Err(e) => return Err(SessionError::Transient(e)),
+                    }
+                }
             }
-            Ok(Ok(env)) => env,
-            // Transport/protocol error: bubble up so the driver reconnects.
-            Ok(Err(e)) => return Err(SessionError::Transient(e)),
         };
 
         match env.typ.as_str() {
@@ -348,7 +363,7 @@ where
             }
             "ping" => {
                 write_frame(
-                    &mut stream,
+                    &mut write_stream,
                     &session_key,
                     &mut send_seq,
                     &env.id,
@@ -529,7 +544,8 @@ async fn wait_or_stop(stop: &mut tokio::sync::watch::Receiver<bool>, dur: Durati
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::ipc::envelope::{read_frame, write_frame};
+    use crate::ipc::envelope::{encode_frame, read_frame, write_frame};
+    use tokio::io::AsyncWriteExt;
 
     fn test_identity() -> PeerIdentity {
         PeerIdentity {
@@ -774,6 +790,49 @@ mod tests {
 
         let res = session.await.expect("join");
         assert!(matches!(res, Ok(())), "expected clean Ok, got {:?}", res);
+    }
+
+    /// A read that has consumed part of a frame must survive an unrelated
+    /// consent event. This is the cancellation-safety property the session
+    /// loop relies on: `select!` polls `&mut read`, rather than owning and
+    /// dropping the `read_frame` future when the decision branch wins.
+    #[tokio::test]
+    async fn partial_frame_read_survives_consent_event() {
+        let (client_half, mut broker_half) = tokio::io::duplex(8192);
+        let (mut read_half, _write_half) = tokio::io::split(client_half);
+        let key = [13u8; 32];
+        let mut broker_send = 0u64;
+        let frame = encode_frame(&key, &mut broker_send, "ping-1", "ping", None)
+            .expect("encode ping");
+
+        // Supply only half the length prefix so read_exact has begun but cannot
+        // complete the frame.
+        broker_half
+            .write_all(&frame[..2])
+            .await
+            .expect("write partial header");
+
+        let mut recv_seq = 0u64;
+        let read = read_frame(&mut read_half, &key, &mut recv_seq);
+        tokio::pin!(read);
+
+        let (decision_tx, mut decision_rx) = tokio::sync::mpsc::unbounded_channel();
+        decision_tx.send(()).expect("queue consent event");
+        tokio::select! {
+            Some(()) = decision_rx.recv() => {}
+            result = &mut read => panic!("partial frame unexpectedly completed: {result:?}"),
+        }
+
+        // The same pinned future still owns the first two bytes and completes
+        // after the remainder arrives; recreating it here would reproduce the
+        // prior framing loss.
+        broker_half
+            .write_all(&frame[2..])
+            .await
+            .expect("write remaining frame");
+        let env = read.await.expect("complete frame after consent event");
+        assert_eq!(env.typ, "ping");
+        assert_eq!(env.id, "ping-1");
     }
 
     // --- Reconnect-driver core ---
