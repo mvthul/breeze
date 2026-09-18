@@ -500,7 +500,7 @@ func (m *mftEncoder) configureEnumeratedHardwareCandidates(flags uint32, inputTy
 		comRelease(transform)
 		lastErr = err
 		slog.Warn("Hardware MFT candidate rejected", "candidate", index, "candidates", count,
-			"inputType", "NV12", "negotiationOrder", "input-then-output", "fallbackReason", err.Error())
+			"inputType", "NV12", "negotiationOrder", "output-then-input", "fallbackReason", err.Error())
 	}
 
 	return 0, fmt.Errorf("none of %d hardware MFT candidates negotiated: %w", count, lastErr)
@@ -511,11 +511,17 @@ func (m *mftEncoder) configureHardwareCandidate(transform uintptr, width, height
 	if err := m.unlockAsyncMFT(transform); err != nil {
 		return fmt.Errorf("async unlock: %w", err)
 	}
-	if err := m.setInputType(transform, width, height); err != nil {
-		return fmt.Errorf("set NV12 input type: %w", err)
-	}
+	// Intel's hardware MFT resolves its input surface contract from the H264
+	// output type. Configuring a hand-built NV12 input first returns E_POINTER
+	// on current Intel UHD drivers, even though the same type is supported once
+	// the driver has selected its H264 profile/level. Keep this order for all
+	// MFT candidates; each candidate is isolated, so a rejection cannot poison
+	// the next encoder activation.
 	if err := m.setNegotiatedOutputType(transform, width, height); err != nil {
 		return fmt.Errorf("set H264 output type: %w", err)
+	}
+	if err := m.setInputType(transform, width, height); err != nil {
+		return fmt.Errorf("set NV12 input type: %w", err)
 	}
 	return nil
 }
