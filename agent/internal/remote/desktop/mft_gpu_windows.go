@@ -67,17 +67,16 @@ func (m *mftEncoder) tryInitGPUPipeline(transform uintptr) {
 // reverting it to CPU buffer mode. Called when GPU converter init fails or the
 // zero-copy input path stalls.
 func (m *mftEncoder) teardownDXGIManager() {
-	m.useDXGISamples = false
-	if m.dxgiManager == 0 {
+	m.detachDXGIManager(m.transform, true)
+	if m.dxgiManager != 0 {
 		return
 	}
-	// Tell MFT to stop using the D3D manager (pass NULL)
-	comCall(m.transform, vtblProcessMessage, uintptr(mftMessageSetD3DManager), 0)
-	comRelease(m.dxgiManager)
-	m.dxgiManager = 0
 
 	// Some hardware MFTs appear to get "stuck" after switching D3D manager state.
 	// A flush + restart messages help restore CPU buffer mode.
+	if m.transform == 0 {
+		return
+	}
 	comCall(m.transform, vtblProcessMessage, mftMessageCommandFlush, 0)
 	comCall(m.transform, vtblProcessMessage, mftMessageNotifyBeginStreaming, 0)
 	comCall(m.transform, vtblProcessMessage, mftMessageNotifyStartOfStream, 0)
@@ -89,6 +88,28 @@ func (m *mftEncoder) teardownDXGIManager() {
 	m.pendingOutput = nil
 
 	slog.Info("DXGI device manager removed from MFT (zero-copy input disabled)")
+}
+
+// detachDXGIManager removes a candidate's D3D manager without assuming the
+// transform has been committed to m.transform. Candidate negotiation calls it
+// on every failure path, while teardownDXGIManager additionally flushes an
+// already-running encoder.
+func (m *mftEncoder) detachDXGIManager(transform uintptr, logRemoval bool) {
+	m.useDXGISamples = false
+	if m.dxgiManager == 0 {
+		return
+	}
+	if transform != 0 {
+		// Tell MFT to stop using the D3D manager (pass NULL). This is best effort:
+		// cleanup must continue even if a driver rejects the message while failed.
+		_, _ = comCall(transform, vtblProcessMessage, uintptr(mftMessageSetD3DManager), 0)
+	}
+	comRelease(m.dxgiManager)
+	m.dxgiManager = 0
+	m.dxgiResetToken = 0
+	if logRemoval {
+		slog.Info("DXGI device manager detached from MFT")
+	}
 }
 
 func (m *mftEncoder) SetD3D11Device(device, context uintptr) {

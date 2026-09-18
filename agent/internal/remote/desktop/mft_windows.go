@@ -205,13 +205,6 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	}
 	isHW := true
 
-	// Attach DXGI only after a candidate has completed CPU/NV12 media-type
-	// negotiation. This keeps a failed candidate from leaving device-manager
-	// state behind and makes the CPU-NV12 path a reliable baseline.
-	if m.d3d11Device != 0 && !m.gpuFailed {
-		m.tryInitGPUPipeline(transform)
-	}
-
 	// Enable low-latency mode
 	m.setLowLatency(transform)
 
@@ -406,14 +399,14 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 // high-resolution negotiation leaves the capture goroutine pinned and causes
 // subsequent sessions to inherit incomplete Media Foundation state.
 func (m *mftEncoder) abortFailedInitialization(transform uintptr, mfStarted bool) {
+	// The transform owns its own reference to a D3D manager after
+	// MFT_MESSAGE_SET_D3D_MANAGER. Detach it before releasing either object so a
+	// rejected candidate cannot retain a stale manager/device for the next
+	// activation.
+	m.detachDXGIManager(transform, false)
 	if transform != 0 {
 		comRelease(transform)
 	}
-	if m.dxgiManager != 0 {
-		comRelease(m.dxgiManager)
-		m.dxgiManager = 0
-	}
-	m.useDXGISamples = false
 	if mfStarted {
 		procMFShutdown.Call()
 	}
@@ -497,6 +490,7 @@ func (m *mftEncoder) configureEnumeratedHardwareCandidates(flags uint32, inputTy
 				"inputType", "NV12", "width", width, "height", height)
 			return transform, nil
 		}
+		m.detachDXGIManager(transform, false)
 		comRelease(transform)
 		lastErr = err
 		slog.Warn("Hardware MFT candidate rejected", "candidate", index, "candidates", count,
@@ -510,6 +504,15 @@ func (m *mftEncoder) configureHardwareCandidate(transform uintptr, width, height
 	// Hardware MFTs are async and must be unlocked before configuration.
 	if err := m.unlockAsyncMFT(transform); err != nil {
 		return fmt.Errorf("async unlock: %w", err)
+	}
+	// Intel's encoder can require a D3D11 device manager before it exposes its
+	// output media types. In particular, the UHD driver on hybrid laptops may
+	// return E_NOTIMPL from GetOutputAvailableType and E_POINTER from SetInputType
+	// until MFT_MESSAGE_SET_D3D_MANAGER has completed. Do this per candidate,
+	// not globally: inactive dGPU candidates must still be free to fall through
+	// to the next MFT or CPU path.
+	if m.d3d11Device != 0 && !m.gpuFailed {
+		m.tryInitGPUPipeline(transform)
 	}
 	// Intel's hardware MFT resolves its input surface contract from the H264
 	// output type. Configuring a hand-built NV12 input first returns E_POINTER
