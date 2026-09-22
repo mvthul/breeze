@@ -17,13 +17,14 @@
     "adminThirdPartyCatalog": "Catálogo de terceros",
     "adminTrustAct": "Acción de confianza del socio",
     "adminTrustQueue": "Cola de confianza del socio",
+    "adminSendingDomains": "Dominios de envío del socio",
     "adminUsersDetailDevices": "Dispositivos del usuario",
     "aiAgentsImpact": "Impacto de IA",
     "aiAgentsRunsDetail": "Detalle de ejecución",
     "aiAgentsRuns": "Ejecuciones de agentes",
     "aiForOffice": "AI para Office",
     "aiRisk": "Motor de riesgo de IA",
-    "alertsChannels": "Canales de notificación",
+    "alertsDelivery": "Alertas – Entrega",
     "alertsCorrelations": "Correlaciones de alertas",
     "alertsDetail": "Detalles de la alerta",
     "alertsMonitors": "Alertas – Monitores",
@@ -166,7 +167,8 @@
     "agreementTemplates": "Plantillas de acuerdo",
     "agreementTemplateDetail": "Plantilla de acuerdo",
     "agreementTemplateNew": "Nueva plantilla de acuerdo",
-    "signedAgreements": "Acuerdos firmados"
+    "signedAgreements": "Acuerdos firmados",
+    "settingsTicketing": "Configuración de tickets"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",

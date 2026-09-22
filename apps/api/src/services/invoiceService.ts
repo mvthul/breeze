@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { and, or, eq, desc, lt, inArray, sql, count } from 'drizzle-orm';
-import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { assertInTransaction, db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
   catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets, ticketCategories,
-  accountingEntityMappings, accountingConnections
+  accountingEntityMappings, accountingConnections, portalBranding
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
@@ -16,6 +16,8 @@ import { snapshotCost } from './catalogPricing';
 // to keep allocation atomic with the number write inside its single transaction.
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
+import { resolveInvoiceFooter, resolveDraftBillTo } from './invoicePdf';
+import { resolveOrgTaxRate, OrgNotVisibleForTaxError } from './taxRateResolver';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import {
   enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
@@ -32,6 +34,7 @@ import {
   assertInvoiceSessionsRevoked,
   requestInvoiceSessionRevocation,
 } from './stripeSessionRevocation';
+import { assignProfileToOrg, clearOrgAssignment } from './billingProfileService';
 import { changeOrgCurrency } from './orgCurrencyService';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
 import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
@@ -122,6 +125,39 @@ async function lockDraftInvoice(tx: DbExecutor, invoiceId: string) {
   if (!rows[0]) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   assertDraft(rows[0]);
   return rows[0];
+}
+
+/**
+ * Invoice-first lock anchor for the interactive contract-line producer.
+ * The caller continues with the contract lock in the same ambient transaction,
+ * matching addContractLine's canonical invoice -> contract order. Exporting the
+ * narrow authorized wrapper keeps lockDraftInvoice itself private.
+ */
+async function lockContractLineDestinationAndSource(
+  tx: DbExecutor,
+  invoiceId: string,
+  contractId: string,
+  actor: InvoiceActor,
+) {
+  const inv = await lockDraftInvoice(tx, invoiceId);
+  requireInvoiceAccess(actor, inv);
+  const [contractRow] = await tx.select({
+    id: contracts.id, orgId: contracts.orgId, currencyCode: contracts.currencyCode,
+  }).from(contracts).where(eq(contracts.id, contractId)).limit(1).for('update');
+  if (!contractRow) throw new InvoiceServiceError('Contract not found', 404, 'INVALID_STATE');
+  if (contractRow.orgId !== inv.orgId) {
+    throw new InvoiceServiceError('Contract line is not available for this invoice', 404, 'INVALID_STATE');
+  }
+  return { invoice: inv, contract: contractRow };
+}
+
+export async function lockContractLineMaterializationSource(
+  invoiceId: string,
+  contractId: string,
+  actor: InvoiceActor,
+) {
+  assertInTransaction('lockContractLineMaterializationSource');
+  return lockContractLineDestinationAndSource(db, invoiceId, contractId, actor);
 }
 
 export async function createManualInvoice(input: { orgId: string; siteId?: string; notes?: string; termsAndConditions?: string; currencyCode?: string }, actor: InvoiceActor) {
@@ -379,8 +415,6 @@ export async function addContractLine(
   actor: InvoiceActor
 ): Promise<{ line: typeof invoiceLines.$inferSelect; pricedFrom: ContractLinePricedFrom }> {
   return db.transaction(async (tx) => {
-    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
-
     // Wave 6 (#3778): the contract id is not optional at the service layer.
     if (!input.contractId) {
       throw new InvoiceServiceError('contractId is required for a contract-sourced line', 500, 'INVALID_STATE');
@@ -391,13 +425,9 @@ export async function addContractLine(
     // `invoice -> contract` order. Without it, a concurrent ACTIVE-contract
     // restamp could commit between this read and this insert, leaving an
     // old-currency line on a live draft that eligibility never saw.
-    const [contractRow] = await tx.select({
-      id: contracts.id, orgId: contracts.orgId, currencyCode: contracts.currencyCode,
-    }).from(contracts).where(eq(contracts.id, input.contractId)).limit(1).for('update');
-    if (!contractRow) throw new InvoiceServiceError('Contract not found', 404, 'INVALID_STATE');
-    if (contractRow.orgId !== inv.orgId) {
-      throw new InvoiceServiceError('Contract belongs to a different organization', 400, 'INVALID_STATE');
-    }
+    const { invoice: inv, contract: contractRow } = await lockContractLineDestinationAndSource(
+      tx, invoiceId, input.contractId, actor,
+    );
 
     // B2 guard (spec §5): a contract-sourced line may only land on an invoice in
     // the SAME currency as its contract — no conversion, no silent restamp. This
@@ -764,14 +794,75 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   // lookup failure (e.g. no accounting connection row) must never fail the
   // whole invoice detail load.
   const accountingSync = await getInvoiceAccountingSync(invoiceId, inv.partnerId).catch(() => null);
+  // Draft BILL TO fallback (sweep paper cut #16): a draft has no bill-to
+  // snapshot yet (billToName/billToAddress/billToTaxId are stamped only at
+  // issue — issueInvoice below), so the detail card would otherwise show "No
+  // billing contact set" even for an org with a name and a billing contact.
+  // Same resolver the PDF renderer uses (loadInvoiceForRender, invoicePdf.ts)
+  // — display-only, never written back to the invoices row, and a no-op once
+  // issued (resolveDraftBillTo short-circuits on status !== 'draft').
+  let billToEmail: string | null = null;
+  let displayInvoice = inv;
+  if (inv.status === 'draft' && !inv.billToName?.trim()) {
+    const [org] = await db
+      .select({ name: organizations.name, billingContact: organizations.billingContact })
+      .from(organizations).where(eq(organizations.id, inv.orgId)).limit(1);
+    const resolved = resolveDraftBillTo({
+      status: inv.status, billToName: inv.billToName,
+      orgName: org?.name ?? null, orgBillingContact: org?.billingContact ?? null,
+    });
+    displayInvoice = { ...inv, billToName: resolved.billToName };
+    billToEmail = resolved.billToEmail;
+  }
+  // #6338: a DRAFT's committed tax_rate is ORG-level only (effectiveRateForOrg
+  // passes partnerRate: null), so a draft for an org whose own rate is blank
+  // shows $0.00 tax while issueInvoice applies the PARTNER default — the tech
+  // approves $200.00 and issues $215.00, and the summary meanwhile claims "no
+  // tax rate is set" when one plainly is. Surface the rate that WILL apply at
+  // issue, READ-ONLY: `invoice.taxRate`, recomputeInvoiceTotals and the
+  // issue-time math are all untouched (routing draft totals through the shared
+  // resolver is still M18's job — see taxRateResolver's docstring).
+  //
+  // Resolved by the ONE shared resolver, so tax_exempt and an org-level rate
+  // win over the partner default exactly as they will at issue. Drafts only:
+  // an issued invoice's rate is already committed on the row.
+  //
+  // Best-effort like the Stripe and accounting lookups above — a resolution
+  // failure degrades to null and NEVER to the partner rate, keeping
+  // resolveOrgTaxRate's fail-closed contract (OrgNotVisibleForTaxError must not
+  // silently tax an invisible, possibly exempt, org at the partner default).
+  //
+  // Deliberately NOT quoteService's mapping of that error to a 404: there the
+  // rate is being COMMITTED to a row, so an invisible org must stop the write.
+  // Here it decorates a read of an invoice the caller has already been granted
+  // (requireInvoiceAccess passed above) — 404-ing the whole detail load because
+  // the org went archived/suspended would break opening the very invoices that
+  // still need collecting. Dropping the preview is the proportionate response.
+  // Every OTHER error is unexpected (DB connectivity, a timeout) and would
+  // otherwise vanish without a trace on a money surface, so it gets a line.
+  let effectiveTaxRate: string | null = null;
+  if (inv.status === 'draft') {
+    try {
+      effectiveTaxRate = await resolveOrgTaxRate({ orgId: inv.orgId, partnerId: inv.partnerId });
+    } catch (err) {
+      if (!(err instanceof OrgNotVisibleForTaxError)) {
+        console.error('[invoiceService] EFFECTIVE_TAX_RATE_PREVIEW_FAILED', {
+          invoiceId, orgId: inv.orgId, error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      effectiveTaxRate = null;
+    }
+  }
   // Multi-currency (#3777, spec §10): surface the CACHED account currency and a
   // warn-don't-block mismatch so the detail page can flag the FX spread before
   // the partner sends a pay link. Cached columns only — no Stripe call here.
   return {
-    invoice: inv, lines: linesWithDeviceCount, stripeConnected: connected, // accounting view (all lines)
+    invoice: displayInvoice, lines: linesWithDeviceCount, stripeConnected: connected, // accounting view (all lines)
+    effectiveTaxRate,
     stripeAccountCurrency: connected ? conn.defaultCurrency ?? null : null,
     currencyWarning: connected ? buildStripeCurrencyWarning(inv.currencyCode, conn.defaultCurrency) : null,
     accountingSync,
+    billToEmail,
   };
 }
 
@@ -792,6 +883,10 @@ export type CustomerInvoiceLine = {
   unitPrice: string;
   taxable: boolean;
   lineTotal: string;
+  /** #6467: worked minutes for a time_entry line — the portal renders the
+   *  worked-vs-billed note from this, never from `description`. Null for
+   *  non-time-entry lines and legacy rows predating the column. */
+  workedMinutes: number | null;
 };
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -826,6 +921,7 @@ type CustomerInvoiceLineSource = {
   unitPrice: string;
   taxable: boolean;
   lineTotal: string;
+  workedMinutes?: number | null;
 };
 
 /** Explicit serialization boundary: never spread an invoice_lines row here. */
@@ -844,6 +940,7 @@ export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): Customer
     unitPrice: line.unitPrice,
     taxable: line.taxable,
     lineTotal: line.lineTotal,
+    workedMinutes: line.workedMinutes ?? null,
   };
 }
 
@@ -887,6 +984,7 @@ export async function getCustomerInvoice(
     unitPrice: invoiceLines.unitPrice,
     taxable: invoiceLines.taxable,
     lineTotal: invoiceLines.lineTotal,
+    workedMinutes: invoiceLines.workedMinutes,
   }).from(invoiceLines).leftJoin(tickets, and(
     eq(tickets.id, invoiceLines.ticketId),
     eq(tickets.orgId, inv.orgId),
@@ -1004,6 +1102,7 @@ const orgBillingProjection = () => ({
 export async function updateOrgBillingSettings(
   orgId: string,
   patch: {
+    billingProfileId?: string | null;
     taxId?: string | null; taxExempt?: boolean; taxRate?: number | null;
     billingContactEmail?: string | null; billingContactName?: string | null;
     billingAddressLine1?: string | null; billingAddressLine2?: string | null;
@@ -1072,9 +1171,25 @@ export async function updateOrgBillingSettings(
   if (patch.billingAddressCountry !== undefined) set.billingAddressCountry = patch.billingAddressCountry;
   const projection = orgBillingProjection();
 
-  // One transaction so the contact merge and the column update still land
-  // together, as they did when this was a single statement.
+  // The assignment, contact merge, and column update must commit or roll back together.
   const row = await db.transaction(async (tx) => {
+    if (patch.billingProfileId !== undefined) {
+      const partnerId = requirePartner(actor);
+      // Lock the org before assignment rows. The helper's SHARE currency barrier
+      // alone would need upgrading for the settings UPDATE and can deadlock
+      // with another save holding SHARE while waiting on the same assignment.
+      const [org] = await tx.select({ id: organizations.id }).from(organizations)
+        .where(and(eq(organizations.id, orgId), eq(organizations.partnerId, partnerId)))
+        .for('update').limit(1);
+      if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+      if (patch.billingProfileId === null) {
+        await clearOrgAssignment(orgId, partnerId, tx);
+      } else {
+        if (!actor.userId) throw new InvoiceServiceError('An assignment requires a user', 403, 'ORG_DENIED');
+        // Acquire the org currency barrier before any contact/settings writes.
+        await assignProfileToOrg(orgId, partnerId, patch.billingProfileId, actor.userId, tx);
+      }
+    }
     if (Object.keys(contactPatch).length > 0) {
       // Existence check, scoped to the contact path ONLY. The merge inserts a
       // `contacts` row for the org, so an unknown orgId would raise an FK
@@ -1088,7 +1203,7 @@ export async function updateOrgBillingSettings(
         .from(organizations)
         .where(eq(organizations.id, orgId))
         .limit(1);
-      if (!exists) return undefined;
+      if (!exists) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
 
       // Merged FIRST so the projection below observes the merged blob —
       // OrgBillingSettings.tsx renders straight from this response.
@@ -1099,12 +1214,13 @@ export async function updateOrgBillingSettings(
     // drizzle rejects `.set({})` — read the same projection back instead.
     if (Object.keys(set).length === 0) {
       const [r] = await tx.select(projection).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+      if (!r) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
       return r;
     }
     const [r] = await tx.update(organizations).set(set).where(eq(organizations.id, orgId)).returning(projection);
+    if (!r) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
     return r;
   });
-  if (!row) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
   return row;
 }
 
@@ -1119,7 +1235,7 @@ async function materializeLines(invoiceId: string, orgId: string, specs: DraftLi
     invoiceId, orgId, sourceType: s.sourceType, sourceId: s.sourceId, catalogItemId: s.catalogItemId,
     parentLineId: null, ticketId: s.ticketId, name: s.name ?? null, description: s.description, quantity: s.quantity,
     unitPrice: s.unitPrice, costBasis: s.costBasis, taxable: s.taxable, customerVisible: s.customerVisible,
-    lineTotal: s.lineTotal, isUnapprovedTime: s.isUnapprovedTime, sortOrder: sort++
+    lineTotal: s.lineTotal, isUnapprovedTime: s.isUnapprovedTime, workedMinutes: s.workedMinutes, sortOrder: sort++
   })));
 }
 
@@ -1351,6 +1467,12 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     //    before the guarded write.
     const [org] = await db.select().from(organizations).where(eq(organizations.id, inv.orgId)).limit(1);
     const [partner] = await db.select().from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
+    // Portal-branding footer for the invoice's org — the last resort of the
+    // shared footer chain (resolveInvoiceFooter, invoicePdf.ts). Read here,
+    // after all locks, alongside the org/partner snapshot reads: a pure
+    // additional SELECT on a read-only table, no new lock class.
+    const [issueBranding] = await db.select({ footerText: portalBranding.footerText })
+      .from(portalBranding).where(eq(portalBranding.orgId, inv.orgId)).limit(1);
     const taxRate = resolveEffectiveTaxRate({ taxExempt: org?.taxExempt ?? false, orgRate: org?.taxRate ?? null, partnerRate: partner?.defaultTaxRate ?? null });
     const issueDate = new Date();
     const dueDate = new Date(issueDate.getTime() + (partner?.invoiceTermsDays ?? 30) * 86400000);
@@ -1386,7 +1508,15 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       billToTaxExempt: org?.taxExempt ?? false,
       // `terms` is the small footer line (from partner.invoiceFooter); `termsAndConditions`
       // is the labeled Terms & Conditions block (from partner.billingTermsAndConditions).
-      terms: partner?.invoiceFooter ?? null,
+      // Resolved through the SHARED chain (settings audit rule 5, finding 22)
+      // so issue time sees the portal-branding fallback the render path always
+      // had. `invoiceTerms: null` because a draft's `terms` is not yet
+      // stamped — this call is what establishes it.
+      terms: resolveInvoiceFooter({
+        invoiceTerms: null,
+        partnerFooter: partner?.invoiceFooter ?? null,
+        brandingFooter: issueBranding?.footerText ?? null,
+      }),
       sellerSnapshot: buildSellerSnapshot(partner),
       termsAndConditions: inv.termsAndConditions ?? partner?.billingTermsAndConditions ?? null,
       // Render-locale snapshot (#3777): stamped ONCE at issue from the partner's
@@ -1518,6 +1648,21 @@ async function inSystemContext<T>(label: string, fn: (runner: DbContextRunner) =
 }
 
 export async function recordPayment(invoiceId: string, input: RecordPaymentInput, actor: InvoiceActor) {
+  // Status PRE-CHECK, before any revocation intent is written (#5611). The
+  // revocation below is irreversible — it expires the invoice's live Stripe
+  // pay links — and used to run before the draft/void validation inside the
+  // transaction, so a mistaken recordPayment on a draft or a void invoice
+  // killed its links and THEN 409'd. This unlocked read only decides whether
+  // to start the revocation at all; the check against the LOCKED row inside
+  // the transaction remains the authoritative one (an issued invoice never
+  // returns to draft, and a void that lands in between has already revoked
+  // its own sessions, so the in-tx 409 is the only thing that can change).
+  const [pre] = await db.select({ status: invoices.status }).from(invoices)
+    .where(eq(invoices.id, invoiceId)).limit(1);
+  if (!pre) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+  if (pre.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
+  if (pre.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
+
   // SEC-150 FAIL-CLOSED, phases 1-2, BEFORE the transaction.
   //
   // Recording an alternate payment clears the balance a Stripe Checkout session
@@ -2144,7 +2289,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       sourceContractId: l.sourceContractId,
       parentLineId, ticketId: l.ticketId, name: l.name, description: l.description, quantity: l.quantity, unitPrice: l.unitPrice,
       costBasis: l.costBasis, revenueAllocation: l.revenueAllocation, taxable: l.taxable, customerVisible: l.customerVisible,
-      lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, sortOrder: l.sortOrder
+      lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, workedMinutes: l.workedMinutes, sortOrder: l.sortOrder
     });
     // Mint every new line id UP FRONT — parents AND children — so the map is
     // complete and order-independent before a single row is written.

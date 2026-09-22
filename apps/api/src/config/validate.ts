@@ -464,6 +464,29 @@ const envObjectSchema = z
         'Explicit unprivileged request DB connection. If unset, Breeze derives the breeze_app URL using BREEZE_APP_DB_PASSWORD or POSTGRES_PASSWORD; production refuses direct DATABASE_URL fallback.',
       ),
 
+    // -- TURN over TLS (#6163) ----------------------------------------------
+    // Declared so collectWarnings() may read them; all three are optional and
+    // unvalidated beyond being strings — the pairing warnings below do the work.
+    TURN_HOST: z
+      .string()
+      .optional()
+      .describe('Public IP of the TURN server. Without it the API advertises no TURN server at all.'),
+
+    TURN_TLS_DIR: z
+      .string()
+      .optional()
+      .describe('Host directory holding cert.pem + privkey.pem, mounted read-only into the bundled coturn at /etc/coturn/tls. Unset disables TURNS.'),
+
+    TURN_TLS_HOST: z
+      .string()
+      .optional()
+      .describe('Hostname ON the TURN TLS certificate. The API advertises a turns: URL only when this is set (TURN_HOST is a bare IP and would fail certificate validation).'),
+
+    TURN_TLS_PORT: z
+      .string()
+      .optional()
+      .describe('Port for the advertised turns: URL. Defaults to 5349.'),
+
     BREEZE_APP_DB_PASSWORD: z
       .string()
       .optional()
@@ -807,6 +830,30 @@ const envObjectSchema = z
     SMTP_HOST: z.string().optional(),
     MAILGUN_API_KEY: z.string().optional(),
     MAILGUN_DOMAIN: z.string().optional(),
+
+    // -- Partner sending domains (spec 2026-09-17) ---------------------------
+    // ALL optional, and none is ever required by an upgrade. Declared as plain
+    // strings (not z.enum): compose maps optional vars as ${VAR:-}, so an unset
+    // variable arrives as "" and a bare enum would refuse boot on every
+    // deployment that upgrades. Value checks live in the superRefine, where ""
+    // and unset both mean "the feature is off".
+    EMAIL_DOMAINS_PROVIDER: z.string().optional(),
+    EMAIL_DOMAINS_STATIC_ALLOWED: z.string().optional(),
+    EMAIL_DOMAINS_RESEND_API_KEY: z.string().optional(),
+    EMAIL_DOMAINS_RESEND_SENDING_KEY: z.string().optional(),
+    EMAIL_DOMAINS_REGION: z.string().optional(),
+    EMAIL_DOMAINS_MAX_PER_PARTNER: z.string().optional(),
+    EMAIL_DOMAINS_DAILY_SEND_CAP: z.string().optional(),
+    EMAIL_DOMAINS_PARTNER_ALLOWLIST: z.string().optional(),
+    EMAIL_DOMAINS_DENYLIST: z.string().optional(),
+    EMAIL_DOMAINS_WEBHOOK_SECRET: z.string().optional(),
+    // Automatic suspension thresholds (spec §9.3). Optional strings like every
+    // other EMAIL_DOMAINS_* key, and deliberately with NO requireIf: hosted
+    // falls back to 0.08 / 50 / 3, self-hosted falls back to "off". Parsing and
+    // range-checking live in services/emailDomains/config.ts.
+    EMAIL_DOMAINS_AUTOSUSPEND_BOUNCE_RATE: z.string().optional(),
+    EMAIL_DOMAINS_AUTOSUSPEND_MIN_MESSAGES: z.string().optional(),
+    EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS: z.string().optional(),
 
     // Cloudflare mTLS — when CLOUDFLARE_API_TOKEN is set, zone id is required.
     CLOUDFLARE_API_TOKEN: z.string().optional(),
@@ -1711,6 +1758,27 @@ const envSchema = envObjectSchema
         ctx,
       );
 
+      // Partner sending domains. KEYED ON EMAIL_DOMAINS_PROVIDER ONLY — never
+      // on EMAIL_PROVIDER. A requireIf(EMAIL_PROVIDER === 'resend', …) here
+      // would refuse boot on every Resend self-host that upgrades, which is the
+      // exact promise spec §11 makes.
+      const emailDomainsProviderProd = (data.EMAIL_DOMAINS_PROVIDER ?? '').trim().toLowerCase();
+      requireIf(
+        emailDomainsProviderProd === 'resend',
+        'EMAIL_DOMAINS_RESEND_API_KEY',
+        data.EMAIL_DOMAINS_RESEND_API_KEY,
+        'EMAIL_DOMAINS_PROVIDER=resend (a full_access key; a sending-only key cannot manage domains)',
+        ctx,
+      );
+      if (emailDomainsProviderProd === 'fake') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EMAIL_DOMAINS_PROVIDER'],
+          message:
+            'EMAIL_DOMAINS_PROVIDER=fake is refused in production. The fake provider verifies domains deterministically and sends nothing real; it exists for unit, integration, E2E and wt-stack runs only. Use `resend`, `static`, or leave it unset.',
+        });
+      }
+
       // Cloudflare mTLS (CLOUDFLARE_API_TOKEN as indicator)
       const cfMtlsEnabled = Boolean(data.CLOUDFLARE_API_TOKEN?.trim());
       requireIf(
@@ -2166,6 +2234,62 @@ const envSchema = envObjectSchema
         }
       }
     }
+
+    // --- Partner sending domains: deployment-mode rules (spec §2.1, §11) ----
+    // Outside the isProduction block on purpose: a hosted staging instance must
+    // refuse `static` and identical keys exactly as production does, and an
+    // unrecognised provider value is a misconfiguration in any NODE_ENV.
+    const emailDomainsProvider = (data.EMAIL_DOMAINS_PROVIDER ?? '').trim().toLowerCase();
+    if (emailDomainsProvider !== '') {
+      const hostedInstance = ['true', '1', 'yes', 'on'].includes((data.IS_HOSTED ?? '').trim().toLowerCase());
+      if (!['resend', 'static', 'fake'].includes(emailDomainsProvider)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EMAIL_DOMAINS_PROVIDER'],
+          message: `EMAIL_DOMAINS_PROVIDER must be one of resend, static, fake — got ${JSON.stringify(emailDomainsProvider)}. Leave it unset to keep custom sending domains off (the default).`,
+        });
+      }
+      if (emailDomainsProvider === 'static' && hostedInstance) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EMAIL_DOMAINS_PROVIDER'],
+          message:
+            'EMAIL_DOMAINS_PROVIDER=static is refused when IS_HOSTED=true. The static adapter is an OPERATOR ATTESTATION that the instance mail relay may send as the listed domains; on hosted there is no such operator and no DNS proof, so a partner could claim a domain it does not own. Use `resend` on hosted.',
+        });
+      }
+      if (emailDomainsProvider === 'resend') {
+        // Resend only has these four. An unrecognised value would sail past boot
+        // and then throw from resolveRegion() on the partner's first domain
+        // create — a runtime failure for a typo we can catch here. Empty means
+        // "use the default" (us-east-1), so it is not an error.
+        const region = (data.EMAIL_DOMAINS_REGION ?? '').trim().toLowerCase();
+        const RESEND_REGIONS = ['us-east-1', 'eu-west-1', 'sa-east-1', 'ap-northeast-1'];
+        if (region !== '' && !RESEND_REGIONS.includes(region)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['EMAIL_DOMAINS_REGION'],
+            message: `EMAIL_DOMAINS_REGION must be one of ${RESEND_REGIONS.join(', ')} when EMAIL_DOMAINS_PROVIDER=resend — got ${JSON.stringify(region)}. Leave it unset to use us-east-1.`,
+          });
+        }
+
+        const platformKey = (data.RESEND_API_KEY ?? '').trim();
+        const partnerKey = (data.EMAIL_DOMAINS_RESEND_API_KEY ?? '').trim();
+        if (platformKey && partnerKey && platformKey === partnerKey) {
+          if (hostedInstance) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['EMAIL_DOMAINS_RESEND_API_KEY'],
+              message:
+                'EMAIL_DOMAINS_RESEND_API_KEY must differ from RESEND_API_KEY when IS_HOSTED=true. Resend enforces bounce and spam limits ACCOUNT-WIDE, so a partner domain sharing the platform account can pause password-reset and security mail for every tenant. Create a second Resend team for the partner lane.',
+            });
+          } else {
+            console.info(
+              '[config] EMAIL_DOMAINS_RESEND_API_KEY matches RESEND_API_KEY — partner-domain mail will share this account\'s sending reputation with platform mail (password resets, security notices). That is supported self-hosted; a second Resend account isolates them.',
+            );
+          }
+        }
+      }
+    }
   });
 
 // Inferred config type from the schema
@@ -2357,6 +2481,43 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
         'ENABLE_2FA=false disables ALL requireMfa() step-up gates (admin/abuse, ' +
         'tenant export/erasure, remote access, API keys, SSO, backups) — not just ' +
         'the /auth/mfa endpoints. Strongly discouraged in production.',
+    });
+  }
+
+  // #6163 — TURN over TLS needs BOTH halves: the bundled coturn only binds 5349
+  // when TURN_TLS_DIR holds a readable certificate, and the API only advertises
+  // `turns:` when TURN_TLS_HOST is set. Setting one without the other is silent
+  // in production — either a listener nobody is told about, or a `turns:` URL
+  // pointing at a port that never came up. coturn cannot warn about the API's
+  // half and the API cannot see coturn's, so warn here, where both are visible.
+  const turnTlsHost = (env.TURN_TLS_HOST ?? '').trim();
+  const turnTlsDir = (env.TURN_TLS_DIR ?? '').trim();
+  if (turnTlsHost && !turnTlsDir) {
+    warnings.push({
+      key: 'TURN_TLS_HOST',
+      message:
+        'TURN_TLS_HOST is set but TURN_TLS_DIR is not. The API will advertise a ' +
+        'turns: URL, but the bundled coturn has no certificate and will not bind ' +
+        '5349 — clients get a TURN candidate that never completes a TLS handshake. ' +
+        'Set TURN_TLS_DIR, or unset TURN_TLS_HOST. (Ignore this if TLS is ' +
+        'terminated by an EXTERNAL TURN server.)',
+    });
+  }
+  if (turnTlsDir && !turnTlsHost) {
+    warnings.push({
+      key: 'TURN_TLS_DIR',
+      message:
+        'TURN_TLS_DIR is set but TURN_TLS_HOST is not. coturn will serve TURNS on ' +
+        '5349, but the API never advertises a turns: URL, so no client will ever ' +
+        'use it. Set TURN_TLS_HOST to the hostname on the certificate.',
+    });
+  }
+  if (turnTlsHost && !(env.TURN_HOST ?? '').trim()) {
+    warnings.push({
+      key: 'TURN_TLS_HOST',
+      message:
+        'TURN_TLS_HOST is set but TURN_HOST is empty. getIceServers() advertises no ' +
+        'TURN server at all without TURN_HOST, so turns: will never be offered.',
     });
   }
 

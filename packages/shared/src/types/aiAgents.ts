@@ -143,6 +143,17 @@ export interface AiAgentLimits {
   designBudgetCentsPerRun: number;
   designMaxTurns: number;
   /**
+   * #5870 — the design-profile wall clock, pinned like `analysisWallClockSeconds`
+   * (same reason: a profile whose raised turn/budget ceilings need real time
+   * to be reached must not be cut by the shared 600s default). Default 1800s:
+   * a design run reads a whole org's fleet across up to `designMaxTurns` (60)
+   * turns before its one `submit_fleet_design` call, and 600s was observed
+   * truncating real runs at 36/60 turns with `wallClockExceeded=true` while
+   * still finalizing `completed` (the outcome tool had been submitted) —
+   * see `designProfile.ts`'s `designLimits`.
+   */
+  designWallClockSeconds: number;
+  /**
    * AI patch agent (W01) — patch-profile admission caps, counted on their
    * own like every other profile. A patch run is scheduled once a day per
    * org (`0 2 * * *` default) plus the occasional manual "Run now", so
@@ -209,6 +220,32 @@ export interface AiAgentLimits {
    * limits-coverage inventory. Snapshot v13.
    */
   sweepPromoteThreshold: number;
+  /**
+   * AI Operator task-wide budgets (Operator spec §7.2, recipe library spec
+   * §6.7; snapshot v15, recipe library E2 #6167). All six are CEILINGS, so
+   * partner/org merge takes the narrower value (the default min-wins rule in
+   * effectivePolicy.ts) — an org override can tighten a task budget, never
+   * widen it. A recipe's own `bounds` may be stricter than these and never
+   * looser; the narrower of the two applies.
+   *
+   * Pre-v15 snapshots lack these fields, so every read site resolves them
+   * through `?? AI_AGENT_LIMIT_DEFAULTS.x` — that fallback, not a version
+   * check, is the compatibility mechanism. See runService.ts's
+   * limits-coverage inventory for where each is (or is not yet) enforced.
+   */
+  /** Spec §7.2 "Reasoning runs per task": 4. Identity recipes ask for 6 (recipe spec §6.7). */
+  taskMaxReasoningRuns: number;
+  /** Spec §7.2 "Mutation attempts per target across all runs": 3, counting nested playbook mutations. */
+  taskMaxMutationAttemptsPerTarget: number;
+  /** Spec §7.2 "Aggregate model budget": 200 cents, also subject to the existing org/day/run limits. */
+  taskMaxBudgetCents: number;
+  /** Spec §7.2 "Task deadline": 72 hours. Identity recipes ask for 14 days (recipe spec §6.7). */
+  taskDeadlineHours: number;
+  /** Spec §7.2 "Active executable targets": 1 until the fleet gates pass. */
+  taskMaxActiveTargets: number;
+  /** Spec §7.2 "pending cap ... 100 per org". A WAITING task consumes no
+   *  active-run concurrency but does consume this quota. */
+  taskMaxPendingPerOrg: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -258,6 +295,7 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxDesignRunsPerDay: 4,
   designBudgetCentsPerRun: 300,
   designMaxTurns: 60,
+  designWallClockSeconds: 1800,
   // Patch-profile admission caps (AI patch agent W01) — see
   // AiAgentLimits.maxConcurrentPatchRuns's docstring.
   maxConcurrentPatchRuns: 1,
@@ -284,6 +322,14 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   // sweepPromoteThreshold merges with max (effectivePolicy.ts).
   maxUnattendedDevicesPerSweep: 3,
   sweepPromoteThreshold: 10,
+  // AI Operator task-wide budgets (v15, recipe library E2) — Operator spec
+  // §7.2's proposed defaults verbatim. See AiAgentLimits.taskMaxReasoningRuns.
+  taskMaxReasoningRuns: 4,
+  taskMaxMutationAttemptsPerTarget: 3,
+  taskMaxBudgetCents: 200,
+  taskDeadlineHours: 72,
+  taskMaxActiveTargets: 1,
+  taskMaxPendingPerOrg: 100,
 });
 
 export interface AiAgentTriggers {
@@ -607,18 +653,35 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * pre-v12 snapshot. Every site that switches on `schemaVersion` must tolerate
  * 1 through 12.
  *
- * v13 (this bump, AI sweeps act mode W05): `maxUnattendedDevicesPerSweep` and
+ * v13 (AI sweeps act mode W05): `maxUnattendedDevicesPerSweep` and
  * `sweepPromoteThreshold` — see `AiAgentLimits.maxUnattendedDevicesPerSweep`'s
  * docstring. Same rule as every prior bump: a v1-v12 in-flight run's snapshot
  * lacks them and MUST still execute; read sites fall back to
  * `AI_AGENT_LIMIT_DEFAULTS` for a pre-v13 snapshot. Every site that switches
  * on `schemaVersion` must tolerate 1 through 13.
+ *
+ * v14 (this bump, #5870): `designWallClockSeconds` — see
+ * `AiAgentLimits.designWallClockSeconds`'s docstring. Same rule as every
+ * prior bump: a v1-v13 in-flight run's snapshot lacks it and MUST still
+ * execute (`designLimits`'s `?? AI_AGENT_LIMIT_DEFAULTS.designWallClockSeconds`
+ * read); read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a pre-v14
+ * snapshot. Every site that switches on `schemaVersion` must tolerate 1
+ * through 14.
+ *
+ * v15 (this bump, AI Operator recipe library E2, #6167): the six task-wide
+ * budgets `taskMaxReasoningRuns`, `taskMaxMutationAttemptsPerTarget`,
+ * `taskMaxBudgetCents`, `taskDeadlineHours`, `taskMaxActiveTargets`,
+ * `taskMaxPendingPerOrg` — see `AiAgentLimits.taskMaxReasoningRuns`'s
+ * docstring. Same rule as every prior bump: a v1-v14 in-flight run's snapshot
+ * lacks them and MUST still execute; read sites fall back to
+ * `AI_AGENT_LIMIT_DEFAULTS` for a pre-v15 snapshot. Every site that switches
+ * on `schemaVersion` must tolerate 1 through 15.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 13 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 15 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), 12 (pre-sweep-act-limits), or 13 (current). Read sites must tolerate all thirteen. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), 12 (pre-sweep-act-limits), 13 (pre-design-wall-clock), 14 (pre-task-limits), or 15 (current). Read sites must tolerate all fifteen. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;

@@ -36,6 +36,7 @@ const routeMocks = vi.hoisted(() => ({
   enforceIpAllowlist: vi.fn(),
   resolveTenantTools: vi.fn(),
   resolveTenantToolByName: vi.fn(),
+  resolveTenantToolHealthByName: vi.fn(),
   executeTenantTool: vi.fn(),
   executeTenantToolDetailed: vi.fn(),
   // A real vi.fn() (not a plain testState-backed factory) so individual tests
@@ -136,6 +137,7 @@ vi.mock('../services/aiTools', () => ({
   getToolDefinitions: (...args: any[]) => routeMocks.getToolDefinitions(...args),
   executeTool: (...args: any[]) => routeMocks.executeTool(...args),
   getToolTier: (...args: any[]) => routeMocks.getToolTier(...args),
+  getToolDomain: () => 'core',
   get aiTools() { return testState.aiTools; },
   verifyDeviceAccess: (...args: any[]) => routeMocks.verifyDeviceAccess(...args),
 }));
@@ -159,6 +161,7 @@ vi.mock('../services/aiGuardrails', async (importOriginal) => {
 vi.mock('../services/toolSources/resolver', () => ({
   resolveTenantTools: (...args: any[]) => routeMocks.resolveTenantTools(...args),
   resolveTenantToolByName: (...args: any[]) => routeMocks.resolveTenantToolByName(...args),
+  resolveTenantToolHealthByName: (...args: any[]) => routeMocks.resolveTenantToolHealthByName(...args),
 }));
 vi.mock('../services/toolSources/execute', () => ({
   executeTenantTool: (...args: any[]) => routeMocks.executeTenantTool(...args),
@@ -417,6 +420,7 @@ describe('MCP transport integration', () => {
     routeMocks.checkPermissionRequirements.mockReset().mockResolvedValue(null);
     routeMocks.resolveTenantTools.mockReset().mockResolvedValue([]);
     routeMocks.resolveTenantToolByName.mockReset().mockResolvedValue(null);
+    routeMocks.resolveTenantToolHealthByName.mockReset().mockResolvedValue({ found: false });
     routeMocks.executeTenantTool.mockReset().mockResolvedValue(JSON.stringify({ ok: true }));
     routeMocks.executeTenantToolDetailed
       .mockReset()
@@ -1299,6 +1303,32 @@ describe('MCP transport integration', () => {
   // Task A10 — tenant (BYO MCP) tools over the MCP HTTP server.
   // -------------------------------------------------------------------------
   describe('Task A10: tenant (BYO MCP) tools', () => {
+    it('tenant tools stay last so core offsets are stable when tenant resolution fails between pages; do not global-sort', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read'] });
+      routeMocks.getToolDefinitions.mockReturnValue(
+        ['query_devices', 'get_backup_status'].map((name) => ({ name, description: '', input_schema: {} })),
+      );
+      routeMocks.getToolTier.mockReturnValue(1);
+      routeMocks.resolveTenantTools.mockResolvedValue([
+        makeTenantToolDescriptor({ qualifiedName: 'ab__read', tier: 1 }),
+        makeTenantToolDescriptor({ qualifiedName: 'aa__read', tier: 1 }),
+      ]);
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.result.tools.map((tool: { name: string }) => tool.name))
+        .toEqual(['get_backup_status', 'query_devices', 'aa__read', 'ab__read']);
+      for (const tool of body.result.tools.slice(2)) {
+        expect(Object.keys(tool).sort()).toEqual(['_meta', 'annotations', 'description', 'inputSchema', 'name', 'title']);
+        expect(tool.annotations).toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true });
+      }
+    });
+
     it('tools/list includes a tier-1 tenant tool for an ai:read key', async () => {
       delete process.env.IS_HOSTED;
       setTestApiKey({ scopes: ['ai:read'] });
@@ -1340,6 +1370,7 @@ describe('MCP transport integration', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.result.content[0].text).toBe(JSON.stringify({ ok: true, asset: 'a-1' }));
+      expect(body.result.structuredContent).toEqual(JSON.parse(body.result.content[0].text));
       expect(body.result.isError).toBeUndefined();
       expect(routeMocks.resolveTenantToolByName).toHaveBeenCalledWith(expect.anything(), 'hudu__get_asset');
       expect(routeMocks.executeTenantToolDetailed).toHaveBeenCalledWith(
@@ -1348,6 +1379,92 @@ describe('MCP transport integration', () => {
         expect.anything(),
         expect.objectContaining({ surface: 'mcp' }),
       );
+      // #6102: the health-check fallback is a failure-branch-only lookup — a
+      // resolve that already succeeded must never trigger the extra query.
+      expect(routeMocks.resolveTenantToolHealthByName).not.toHaveBeenCalled();
+    });
+
+    // #6102: an accessible tenant tool whose source is unhealthy must not
+    // read as "unknown tool" over MCP — but it also must not leak the raw
+    // lastError to a caller with no guaranteed tool_sources:read.
+    it('tools/call reports tool_source_unavailable (not "Unknown tool") for an accessible tenant tool whose source is not active', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read'] });
+      routeMocks.resolveTenantToolByName.mockResolvedValue(null);
+      routeMocks.resolveTenantToolHealthByName.mockResolvedValue({ found: true, sourceStatus: 'error' });
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'hudu__get_asset', arguments: { id: 'a-1' } },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error.code).toBe(-32000);
+      expect(body.error.data).toEqual({ code: 'tool_source_unavailable', sourceStatus: 'error' });
+      expect(body.error.message).not.toMatch(/^Unknown tool/);
+      expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
+    });
+
+    it('tools/call still reports the generic "Unknown tool" for a tenant tool name the caller genuinely has no access to', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read'] });
+      routeMocks.resolveTenantToolByName.mockResolvedValue(null);
+      routeMocks.resolveTenantToolHealthByName.mockResolvedValue({ found: false });
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'hudu__no_such_tool', arguments: {} },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error.code).toBe(-32602);
+      expect(body.error.message).toBe('Unknown tool: hudu__no_such_tool');
+    });
+
+    it('tools/call fails closed (not "Unknown tool") when the health-check lookup itself throws', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read'] });
+      routeMocks.resolveTenantToolByName.mockResolvedValue(null);
+      routeMocks.resolveTenantToolHealthByName.mockRejectedValue(new Error('DB timeout'));
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'hudu__get_asset', arguments: {} },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Must NOT read as "this tool doesn't exist" — that's a worse lie than
+      // the original bug. A DB blip fails closed with its own distinct error.
+      expect(body.error.message).not.toBe('Unknown tool: hudu__get_asset');
+      expect(body.error.code).toBe(-32000);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[MCP] Tenant tool health check failed for:',
+        'hudu__get_asset',
+        expect.any(Error),
+      );
+      consoleErrorSpy.mockRestore();
     });
 
     it('denies a tier-2 tenant tool over MCP without ai:write scope', async () => {
@@ -1399,6 +1516,75 @@ describe('MCP transport integration', () => {
       expect(body.error?.message).toBe('Insufficient permissions: requires external_tools.use');
       expect(routeMocks.executeTenantTool).not.toHaveBeenCalled();
       expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
+    });
+
+    // #6401: tools/list used to advertise tier-3 tenant descriptors for a key
+    // holding ai:execute even though handleTenantToolCall's isMcpApprovalGate
+    // denies every effective tier 3 unconditionally — an "advertised-but-dead"
+    // tool the caller could never actually invoke. The core registry already
+    // enforces "listed ⇒ callable" via isToolWhollyGatedOverMcp; the tenant
+    // filter must match it.
+    it('tools/list omits a tier-3 tenant tool even for a key holding ai:execute', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read', 'ai:write', 'ai:execute'] });
+      routeMocks.resolveTenantTools.mockResolvedValue([
+        makeTenantToolDescriptor({ qualifiedName: 'hudu__create_asset', tier: 3 }),
+      ]);
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.result.tools.map((t: { name: string }) => t.name)).not.toContain('hudu__create_asset');
+    });
+
+    it('tools/list omits a tier-3 tenant tool even for a key holding ai:execute + ai:execute_admin in production', async () => {
+      delete process.env.IS_HOSTED;
+      process.env.NODE_ENV = 'production';
+      delete process.env.MCP_REQUIRE_EXECUTE_ADMIN;
+      setTestApiKey({ scopes: ['ai:read', 'ai:write', 'ai:execute', 'ai:execute_admin'] });
+      testState.redis = { get: vi.fn(async () => null) };
+      routeMocks.getUserPermissions.mockResolvedValue(WILDCARD_PERMISSIONS);
+      routeMocks.resolveTenantTools.mockResolvedValue([
+        makeTenantToolDescriptor({ qualifiedName: 'hudu__create_asset', tier: 3 }),
+      ]);
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.result.tools.map((t: { name: string }) => t.name)).not.toContain('hudu__create_asset');
+    });
+
+    it('tools/list still includes tenant tier-1 and tier-2 tools for the appropriate scopes (fix is not over-broad)', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read', 'ai:write'] });
+      routeMocks.resolveTenantTools.mockResolvedValue([
+        makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 }),
+        makeTenantToolDescriptor({ qualifiedName: 'hudu__update_asset', tier: 2 }),
+        makeTenantToolDescriptor({ qualifiedName: 'hudu__create_asset', tier: 3 }),
+      ]);
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const names = body.result.tools.map((t: { name: string }) => t.name);
+      expect(names).toContain('hudu__get_asset');
+      expect(names).toContain('hudu__update_asset');
+      expect(names).not.toContain('hudu__create_asset');
     });
 
     it('denies a tier-3 tenant tool over MCP with MCP_APPROVAL_REQUIRED, same as core', async () => {
@@ -1455,6 +1641,7 @@ describe('MCP transport integration', () => {
       const body = await res.json();
       expect(body.result.isError).toBe(true);
       expect(body.result.content[0].text).toBe(JSON.stringify({ error: 'remote MCP call failed' }));
+      expect(body.result.structuredContent).toBeUndefined();
       expect(routeMocks.writeAuditEvent).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ result: 'failure' }),
@@ -1489,7 +1676,7 @@ describe('MCP transport integration', () => {
       expect(typeof body.result.instructions).toBe('string');
       expect(body.result.instructions.length).toBeGreaterThan(100);
       expect(body.result.capabilities.prompts).toEqual({ listChanged: false });
-      expect(body.result.protocolVersion).toBe('2024-11-05');
+      expect(body.result.protocolVersion).toBe('2025-11-25');
     });
 
     it('prompts/list surfaces all 5 guided workflow prompts', async () => {

@@ -1,7 +1,7 @@
 import { config } from 'dotenv';
 // Load .env from monorepo root (when running from apps/api) or cwd (when running from root)
-config({ path: '../../.env' });
-config(); // Also try cwd
+config({ path: '../../.env', quiet: true });
+config({ quiet: true }); // Also try cwd
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { sql, type SQL } from 'drizzle-orm';
@@ -13,6 +13,12 @@ import {
   logRequestDatabaseConfigSource,
   resolveRequestDatabaseConfig,
 } from './requestDatabaseConfig';
+import {
+  formatUnsafeRequestDatabaseRoleMessage,
+  REQUEST_DATABASE_ROLE_REMEDIATION,
+  unsafeRequestDatabaseRoleCapabilities,
+  type RequestDatabaseRole,
+} from './requestDatabaseRoleSafety';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import {
   getDbAccessContextPrologueTimeoutMs,
@@ -62,15 +68,7 @@ const client = postgres(requestDatabaseConfig.url, {
   connection: { application_name: 'breeze-api' },
 });
 
-export interface RequestDatabaseRole {
-  currentUser: string;
-  isSuperuser: boolean;
-  bypassesRls: boolean;
-}
-
-const REQUEST_DATABASE_ROLE_REMEDIATION =
-  'Set DATABASE_URL_APP to a NOSUPERUSER NOBYPASSRLS role, or configure ' +
-  'BREEZE_APP_DB_PASSWORD/POSTGRES_PASSWORD so Breeze can derive the breeze_app URL.';
+export type { RequestDatabaseRole } from './requestDatabaseRoleSafety';
 
 /**
  * Reads the effective role from the exact module-scope postgres.js client that
@@ -107,16 +105,10 @@ export async function getRequestDatabaseRole(): Promise<RequestDatabaseRole> {
 
 export async function assertRequestDatabaseRoleSafe(): Promise<RequestDatabaseRole> {
   const role = await getRequestDatabaseRole();
-  const unsafeCapabilities: string[] = [];
-  if (role.isSuperuser) unsafeCapabilities.push('SUPERUSER');
-  if (role.bypassesRls) unsafeCapabilities.push('BYPASSRLS');
+  const unsafeCapabilities = unsafeRequestDatabaseRoleCapabilities(role);
 
   if (unsafeCapabilities.length > 0) {
-    throw new Error(
-      `[database] Unsafe effective request database role "${role.currentUser}": ` +
-        `${unsafeCapabilities.join(' and ')}. Request handlers require a ` +
-        `NOSUPERUSER NOBYPASSRLS role. ${REQUEST_DATABASE_ROLE_REMEDIATION}`,
-    );
+    throw new Error(formatUnsafeRequestDatabaseRoleMessage(role, unsafeCapabilities));
   }
 
   return role;
@@ -647,10 +639,36 @@ function reportHeldContextIfNeeded(input: {
   }
 }
 
+/**
+ * An explicit isolation level forces a NEW top-level transaction, because
+ * Drizzle savepoints ignore isolation options. That takes a SECOND pooled
+ * connection, so it must never be opened while this request already holds one:
+ * at concurrency >= pool size every request would hold connection #1 while
+ * waiting for connection #2 and the pool deadlocks (#1105, #2417). The calling
+ * route must be listed in SELF_MANAGED_DB_CONTEXT_ROUTES so it carries no
+ * ambient context. Exported for the regression test.
+ */
+export function assertIsolationNotNested(contextHeld: boolean): void {
+  if (!contextHeld) return;
+  throw new Error(
+    'withDbAccessContext: an isolationLevel opens a second pooled connection and a DB context is already held — '
+    + 'add this route to SELF_MANAGED_DB_CONTEXT_ROUTES instead of nesting transactions',
+  );
+}
+
 export async function withDbAccessContext<T>(
   context: DbAccessContext,
-  fn: () => Promise<T>
+  fn: () => Promise<T>,
+  options?: { isolationLevel: 'repeatable read' | 'serializable' }
 ): Promise<T> {
+  // An explicit isolation level requires a new top-level transaction: Drizzle
+  // savepoints ignore isolation options, and our GUC SELECTs already took a
+  // snapshot. Keep the ambient caller's permissions even on this new connection.
+  // This transaction is independent of any outer writes; callers must pass all writes through it.
+  if (options) {
+    assertIsolationNotNested(!!dbContextStorage.getStore());
+    context = dbContextMetaStorage.getStore() ?? context;
+  }
   if (dbContextStorage.getStore()) {
     return fn();
   }
@@ -702,7 +720,7 @@ export async function withDbAccessContext<T>(
           warnMs,
         });
       }
-    }),
+    }, options),
   );
 }
 
@@ -918,6 +936,17 @@ export function assertInTransaction(label: string): void {
       + 'without one every write lands on the bare pool with no RLS GUC and silently affects 0 rows',
     );
   }
+}
+
+/** Compose ambient-db services inside a real driver-owned savepoint. Rebind
+ * only the executor: the caller's RLS GUCs and access metadata are unchanged.
+ * Using raw SQL SAVEPOINT here is insufficient: postgres.js also tracks errors
+ * in its transaction callback, so a caught SQL failure would poison the outer
+ * commit even after an explicit ROLLBACK TO. */
+export async function withDbTransaction<T>(fn: () => Promise<T>): Promise<T> {
+  assertInTransaction('withDbTransaction');
+  const executor = dbContextStorage.getStore()!;
+  return executor.transaction(tx => dbContextStorage.run(tx as unknown as typeof baseDb, fn));
 }
 
 /**

@@ -31,9 +31,12 @@ import {
   createMonitorDefinition,
   updateMonitorDefinition,
   deleteMonitorDefinition,
+  getMonitorDefinition,
+  MonitorHasDependentsError,
   MonitorOwnershipError,
   MonitorValidationError,
 } from './monitorService';
+import * as monitorCompiler from './monitorCompiler';
 import type { AuthContext } from '../../middleware/auth';
 import type { CreateMonitorDefinitionInput, UpdateMonitorDefinitionInput } from '@breeze/shared';
 
@@ -397,5 +400,104 @@ describe('updateMonitorDefinition / deleteMonitorDefinition run for real (#5289 
         auth(),
       ),
     ).resolves.toBe('ok');
+  });
+});
+
+
+it('creates a system monitor with a null actor using the supplied executor throughout', async () => {
+  const created = existingRow({ createdBy: null });
+  const values = vi.fn().mockReturnValue({ returning: async () => [created] });
+  const tx = { insert: vi.fn().mockReturnValue({ values }) };
+  const from = vi.fn()
+    .mockReturnValueOnce({ where: () => ({ limit: async () => [{ orgId: null, partnerId: PARTNER }] }) })
+    .mockReturnValueOnce({ where: () => ({ limit: async () => [{ partnerId: PARTNER }] }) });
+  const executor = {
+    select: vi.fn().mockReturnValue({ from }),
+    transaction: vi.fn(async (callback: (transaction: typeof tx) => unknown) => callback(tx)),
+  };
+  const compile = vi.spyOn(monitorCompiler, 'compileMonitorInTx').mockResolvedValue({
+    alertTemplateId: 'template-1', alertRuleId: 'rule-1', automationId: 'automation-1', hash: 'hash',
+  });
+  try {
+    const result = await createMonitorDefinition(
+      input({ escalationPolicyId: ESCALATION_POLICY }), auth({ scope: 'system' }), {},
+      executor as unknown as monitorCompiler.DbExecutor,
+    );
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ createdBy: null, orgId: ORG, partnerId: null }));
+    expect(executor.select).toHaveBeenCalledTimes(2);
+    expect(executor.transaction).toHaveBeenCalledTimes(1);
+    expect(tx.insert).toHaveBeenCalledTimes(1);
+    expect(compile).toHaveBeenCalledWith(tx, created);
+    expect(result).toMatchObject({ createdBy: null, compiledAlertRuleId: 'rule-1' });
+    expect(dbMock.select).not.toHaveBeenCalled();
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+    expect(dbMock.insert).not.toHaveBeenCalled();
+  } finally {
+    compile.mockRestore();
+  }
+});
+
+
+describe('conversion executor propagation', () => {
+  it('reads and deletes only through the caller executor', async () => {
+    const row = existingRow();
+    const where = vi.fn(async () => undefined);
+    const executor = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [row] }) }) })),
+      delete: vi.fn(() => ({ where })),
+    };
+    expect(await getMonitorDefinition('monitor-1', auth(), executor as never)).toEqual(row);
+    await deleteMonitorDefinition('monitor-1', auth(), executor as never);
+    expect(executor.select).toHaveBeenCalledTimes(2);
+    expect(executor.delete).toHaveBeenCalledTimes(1);
+    expect(dbMock.select).not.toHaveBeenCalled();
+    expect(dbMock.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteMonitorDefinition: dependent-row FK violation (#6509)', () => {
+  // Regression for #6509: DELETE 500ed with the raw postgres
+  // "alerts_rule_id_alert_rules_id_fk" constraint text once the monitor had
+  // ever produced an alert. The FK is now ON DELETE SET NULL
+  // (2026-10-25-130200) so this should not fire in the ordinary case, but the
+  // service still owes a clean, typed error for ANY residual FK violation the
+  // cascade hits, instead of letting the raw driver error propagate to the
+  // route (and from there, to the client).
+  it('maps a postgres foreign-key violation to MonitorHasDependentsError', async () => {
+    const row = existingRow();
+    const pgForeignKeyError = Object.assign(
+      new Error(
+        'update or delete on table "alert_rules" violates foreign key constraint '
+        + '"alerts_rule_id_alert_rules_id_fk" on table "alerts"',
+      ),
+      { code: '23503' },
+    );
+    const where = vi.fn(async () => {
+      throw pgForeignKeyError;
+    });
+    const executor = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [row] }) }) })),
+      delete: vi.fn(() => ({ where })),
+    };
+
+    await expect(
+      deleteMonitorDefinition('monitor-1', auth(), executor as never),
+    ).rejects.toBeInstanceOf(MonitorHasDependentsError);
+  });
+
+  it('lets a non-FK error propagate untouched', async () => {
+    const row = existingRow();
+    const otherError = new Error('connection reset');
+    const where = vi.fn(async () => {
+      throw otherError;
+    });
+    const executor = {
+      select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => [row] }) }) })),
+      delete: vi.fn(() => ({ where })),
+    };
+
+    await expect(
+      deleteMonitorDefinition('monitor-1', auth(), executor as never),
+    ).rejects.toBe(otherError);
   });
 });

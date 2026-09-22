@@ -83,6 +83,10 @@
   },
   "drawer": {
     "title": "Occurrences",
+    "empty_one": "No occurrences yet. The first one is planned {{count}} day before its due date.",
+    "empty_other": "No occurrences yet. The first one is planned {{count}} days before its due date.",
+    "emptyWithDate_one": "No occurrences yet. The first one is planned {{count}} day before its due date ({{date}}).",
+    "emptyWithDate_other": "No occurrences yet. The first one is planned {{count}} days before its due date ({{date}}).",
     "evidence": "Evidence",
     "noEvidence": "No evidence attached",
     "late": "Late",
@@ -170,7 +174,7 @@
   "templates": {
     "pageTitle": "Deliverable templates",
     "pageDescription": "Define a service tier once and apply it to any customer. Partner-wide sets are available to every organization you manage.",
-    "empty": "No template sets yet.",
+    "empty": "No template sets yet. Create one to define a reusable service tier for your customers.",
     "allOrganizations": "All orgs",
     "actions": {
       "newSet": "New template set",

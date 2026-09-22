@@ -7,6 +7,7 @@ import {
   configPolicyAssignments,
   configPolicyAlertRules,
   configPolicyAutomations,
+  monitorConversions,
   configPolicyComplianceRules,
   configPolicyPatchSettings,
   configPolicyMaintenanceSettings,
@@ -20,10 +21,16 @@ import {
   sites,
   softwarePolicies,
 } from '../db/schema';
-import { and, eq, ne, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { and, eq, ne, sql, inArray, asc, SQL, or, isNull } from 'drizzle-orm';
 import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
+import {
+  MAINTENANCE_DATETIME_TIME_PATTERN,
+  MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN,
+  MAINTENANCE_TIME_OF_DAY_PATTERN,
+} from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import type { TokenPayload } from './jwt';
+import type { DbExecutor } from './monitors/monitorCompiler';
 import type { AutomationAssignmentLevel } from '../jobs/queueSchemas';
 
 // ============================================
@@ -93,9 +100,9 @@ interface DeviceHierarchy {
   osType: string;
 }
 
-async function loadDeviceHierarchy(deviceId: string): Promise<DeviceHierarchy | null> {
+async function loadDeviceHierarchy(deviceId: string, executor: DbExecutor = db): Promise<DeviceHierarchy | null> {
   // 1. Load device
-  const [device] = await db
+  const [device] = await executor
     .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, deviceRole: devices.deviceRole, osType: devices.osType })
     .from(devices)
     .where(eq(devices.id, deviceId))
@@ -104,14 +111,14 @@ async function loadDeviceHierarchy(deviceId: string): Promise<DeviceHierarchy | 
   if (!device) return null;
 
   // 2. Load org for partnerId
-  const [org] = await db
+  const [org] = await executor
     .select({ partnerId: organizations.partnerId })
     .from(organizations)
     .where(eq(organizations.id, device.orgId))
     .limit(1);
 
   // 3. Load device group memberships
-  const groupRows = await db
+  const groupRows = await executor
     .select({ groupId: deviceGroupMemberships.groupId })
     .from(deviceGroupMemberships)
     .where(eq(deviceGroupMemberships.deviceId, deviceId));
@@ -127,14 +134,47 @@ async function loadDeviceHierarchy(deviceId: string): Promise<DeviceHierarchy | 
   };
 }
 
+export type RoleOsFilterable = {
+  roleFilter?: string[] | null;
+  osFilter?: string[] | null;
+};
+
+export type DeviceRoleOs = {
+  deviceRole?: string | null;
+  osType?: string | null;
+};
+
+/**
+ * Pure predicate matching the SQL semantics of buildRoleOsFilterConditions:
+ * - NULL or undefined filter matches all (backward compatible).
+ * - Non-empty filter matches if device's role/os is contained in the array.
+ * - Empty array filter matches none (matches Postgres `x = ANY('{}')` which is false).
+ */
+export function matchesRoleOsFilter(
+  assignment: RoleOsFilterable,
+  device: DeviceRoleOs
+): boolean {
+  if (assignment.roleFilter != null) {
+    if (!device.deviceRole || !assignment.roleFilter.includes(device.deviceRole)) {
+      return false;
+    }
+  }
+  if (assignment.osFilter != null) {
+    if (!device.osType || !assignment.osFilter.includes(device.osType)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Build SQL conditions that enforce roleFilter and osFilter on assignments.
  * NULL filter = match all (backward compatible).
  */
-function buildRoleOsFilterConditions(hierarchy: DeviceHierarchy): SQL[] {
+export function buildRoleOsFilterConditions(device: DeviceRoleOs): SQL[] {
   return [
-    sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(hierarchy.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
-    sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(hierarchy.osType)} = ANY(${configPolicyAssignments.osFilter}))`,
+    sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(device.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
+    sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(device.osType)} = ANY(${configPolicyAssignments.osFilter}))`,
   ];
 }
 
@@ -314,7 +354,7 @@ export async function resolveGoverningAlertRulePolicyForDevice(
     .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
       configPolicyAlertRules,
-      eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id)
+      and(eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id), isNull(configPolicyAlertRules.retiredAt))
     )
     .where(
       and(
@@ -385,7 +425,7 @@ export async function resolveAlertRulesForDevice(
     )
     .innerJoin(
       configPolicyAlertRules,
-      eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id)
+      and(eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id), isNull(configPolicyAlertRules.retiredAt))
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
@@ -424,10 +464,10 @@ export interface ResolvedDeviceAutomations {
  * assignment won. `null` when the device is unknown or nothing is assigned —
  * callers treat that as "skip this device", never as "no constraint applies".
  */
-export async function resolveAutomationsForDeviceWithPolicy(
-  deviceId: string
+export async function resolveAutomationAssignmentForDevice(
+  deviceId: string, executor: DbExecutor = db,
 ): Promise<ResolvedDeviceAutomations | null> {
-  const hierarchy = await loadDeviceHierarchy(deviceId);
+  const hierarchy = await loadDeviceHierarchy(deviceId, executor);
   if (!hierarchy) return null;
 
   const targetConditions = buildTargetConditions(hierarchy);
@@ -438,7 +478,7 @@ export async function resolveAutomationsForDeviceWithPolicy(
   // breeze_current_partner_id(). So this runs in the CALLER'S OWN context (W03
   // deleted the system-context escape). Self-tenanted by this device's own
   // hierarchy on top of RLS.
-  const rows = await db
+  const rows = await executor
     .select({
       automation: configPolicyAutomations,
       assignmentLevel: configPolicyAssignments.level,
@@ -465,7 +505,12 @@ export async function resolveAutomationsForDeviceWithPolicy(
     )
     .innerJoin(
       configPolicyAutomations,
-      eq(configPolicyAutomations.featureLinkId, configPolicyEffectiveFeatureLinks.id)
+      and(eq(configPolicyAutomations.featureLinkId, configPolicyEffectiveFeatureLinks.id),
+        or(isNull(configPolicyAutomations.retiredAt), sql`EXISTS (SELECT 1 FROM ${monitorConversions}
+          WHERE ${monitorConversions.sourceTable} = 'config_policy_automations'
+            AND ${monitorConversions.sourceId} = ${configPolicyAutomations.id}
+            AND ${monitorConversions.revertedAt} IS NULL
+            AND ${monitorConversions.sourceState}->>'workflowId' IS NOT NULL)`))
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
@@ -485,6 +530,13 @@ export async function resolveAutomationsForDeviceWithPolicy(
     configPolicyId: winner.policyId,
     automations: winning.map((r) => r.automation),
   };
+}
+
+export async function resolveAutomationsForDeviceWithPolicy(
+  deviceId: string, executor: DbExecutor = db,
+): Promise<ResolvedDeviceAutomations | null> {
+  const winner = await resolveAutomationAssignmentForDevice(deviceId, executor);
+  return winner ? { ...winner, automations: winner.automations.filter((automation) => !automation.retiredAt) } : null;
 }
 
 /**
@@ -1400,7 +1452,8 @@ export async function scanScheduledAutomations(): Promise<ScheduledAutomationWit
     .where(
       and(
         eq(configPolicyAutomations.triggerType, 'schedule'),
-        eq(configPolicyAutomations.enabled, true)
+        eq(configPolicyAutomations.enabled, true),
+        isNull(configPolicyAutomations.retiredAt)
       )
     )
     .orderBy(
@@ -1701,6 +1754,12 @@ export async function resolveAllBackupAssignedDevices(
       assignmentTargetId: configPolicyAssignments.targetId,
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
+      // #6001: role/OS targeting, applied per expanded device below. The
+      // per-device resolver enforces the same two columns in SQL
+      // (buildRoleOsFilterConditions); this one cannot, because it expands one
+      // assignment to many devices with different roles and OSes.
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
     })
     .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
@@ -1751,7 +1810,10 @@ export async function resolveAllBackupAssignedDevices(
   const targetableDevice = backupTargetableDeviceCondition();
 
   for (const row of sorted) {
-    let deviceIds: string[];
+    // Candidates carry role/os so the role/OS filter can be applied per device
+    // (#6001). Selecting the two columns here costs nothing — the branch
+    // queries already read the `devices` row.
+    let candidates: { id: string; deviceRole: string | null; osType: string | null }[];
 
     // EVERY branch must re-tenant to `orgId`. A partner-wide policy is visible
     // to every org under the partner, so its assignment can name a target in a
@@ -1764,7 +1826,7 @@ export async function resolveAllBackupAssignedDevices(
     switch (row.assignmentLevel) {
       case 'device': {
         const [device] = await db
-          .select({ id: devices.id })
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(devices)
           .where(
             and(
@@ -1774,12 +1836,12 @@ export async function resolveAllBackupAssignedDevices(
             )
           )
           .limit(1);
-        deviceIds = device ? [device.id] : [];
+        candidates = device ? [device] : [];
         break;
       }
       case 'device_group': {
-        const members = await db
-          .select({ deviceId: devices.id })
+        candidates = await db
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(deviceGroupMemberships)
           .innerJoin(devices, eq(devices.id, deviceGroupMemberships.deviceId))
           .where(
@@ -1789,12 +1851,11 @@ export async function resolveAllBackupAssignedDevices(
               targetableDevice
             )
           );
-        deviceIds = members.map((m) => m.deviceId);
         break;
       }
       case 'site': {
-        const siteDevices = await db
-          .select({ id: devices.id })
+        candidates = await db
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(devices)
           .where(
             and(
@@ -1803,25 +1864,23 @@ export async function resolveAllBackupAssignedDevices(
               targetableDevice
             )
           );
-        deviceIds = siteDevices.map((d) => d.id);
         break;
       }
       case 'organization': {
         // An org-level assignment contributes devices ONLY to the org it names.
         if (row.assignmentTargetId !== orgId) {
-          deviceIds = [];
+          candidates = [];
           break;
         }
-        const orgDevices = await db
-          .select({ id: devices.id })
+        candidates = await db
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(devices)
           .where(and(eq(devices.orgId, orgId), targetableDevice));
-        deviceIds = orgDevices.map((d) => d.id);
         break;
       }
       case 'partner': {
-        const partnerDevices = await db
-          .select({ id: devices.id })
+        candidates = await db
+          .select({ id: devices.id, deviceRole: devices.deviceRole, osType: devices.osType })
           .from(devices)
           .innerJoin(organizations, eq(devices.orgId, organizations.id))
           .where(
@@ -1831,12 +1890,27 @@ export async function resolveAllBackupAssignedDevices(
               targetableDevice
             )
           );
-        deviceIds = partnerDevices.map((d) => d.id);
         break;
       }
       default:
-        deviceIds = [];
+        candidates = [];
     }
+
+    // #6001: role/OS targeting, applied with the SAME predicate the per-device
+    // resolver enforces in SQL (`matchesRoleOsFilter` mirrors
+    // `buildRoleOsFilterConditions`). Without it this resolver's candidate set
+    // was a strict SUPERSET of the manual one, so an assignment the device page
+    // excludes could outrank — and silently replace — the one it picks. Both
+    // are first-wins-by-hierarchy, so the two entry points then dispatched
+    // different links for the same device: manual backups succeeded while the
+    // nightly sweep shipped a pathless one.
+    //
+    // Filtering HERE (before `seen`) and not after is what makes the two agree:
+    // an excluded device must leave the slot open for the next assignment down
+    // the hierarchy, exactly as the manual resolver's WHERE clause does.
+    const deviceIds = candidates
+      .filter((device) => matchesRoleOsFilter(row, device))
+      .map((device) => device.id);
 
     // First assignment wins per device (sorted is already highest-priority-first)
     const profileId = row.backupSettings?.backupProfileId ?? null;
@@ -2018,16 +2092,14 @@ export interface MaintenanceWindowStatus {
   windowEndsAt: Date | null;
 }
 
-/** Bare time of day, e.g. "1:50", "01:50" or "01:50:00". */
-const TIME_OF_DAY_PATTERN = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
-/** Time component of a naive (zoneless) ISO-8601-ish datetime, e.g. "2026-03-15T02:00". */
-const DATETIME_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/;
-/**
- * A trailing `Z` or `±HH:MM` offset. Such a value names an *instant*, so its
- * digits are not wall-clock time in `settings.timezone` — `migrateToConfigPolicies`
- * writes exactly this shape (`toISOString()`) for migrated `once` windows.
- */
-const EXPLICIT_UTC_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+// The maintenance windowStart grammar lives in @breeze/shared so the write-time
+// gate (maintenanceInlineSettingsSchema, #6312) and this evaluator cannot drift
+// apart about what a stored value means. `migrateToConfigPolicies` writes a
+// `toISOString()` (offset-bearing) value for migrated `once` windows, which is
+// why the offset form stays legal for `once` and only recurring rejects it.
+const TIME_OF_DAY_PATTERN = MAINTENANCE_TIME_OF_DAY_PATTERN;
+const DATETIME_TIME_PATTERN = MAINTENANCE_DATETIME_TIME_PATTERN;
+const EXPLICIT_UTC_OFFSET_PATTERN = MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN;
 
 /** The anchor recurring windows used before issue #4224, and the fallback still. */
 const MIDNIGHT_ANCHOR = { hours: 0, minutes: 0 } as const;

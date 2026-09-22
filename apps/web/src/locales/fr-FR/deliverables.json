@@ -83,6 +83,10 @@
   },
   "drawer": {
     "title": "Occurrences",
+    "empty_one": "Aucune occurrence pour le moment. La première est planifiée {{count}} jour avant son échéance.",
+    "empty_other": "Aucune occurrence pour le moment. La première est planifiée {{count}} jours avant son échéance.",
+    "emptyWithDate_one": "Aucune occurrence pour le moment. La première est planifiée {{count}} jour avant son échéance ({{date}}).",
+    "emptyWithDate_other": "Aucune occurrence pour le moment. La première est planifiée {{count}} jours avant son échéance ({{date}}).",
     "evidence": "Justificatifs",
     "noEvidence": "Aucun justificatif joint",
     "late": "En retard",
@@ -170,7 +174,7 @@
   "templates": {
     "pageTitle": "Modèles de livrables",
     "pageDescription": "Définissez un niveau de service une fois et appliquez-le à n'importe quel client. Les ensembles valables pour tout le partenaire sont disponibles pour chaque organisation que vous gérez.",
-    "empty": "Aucun ensemble de modèles pour le moment.",
+    "empty": "Aucun ensemble de modèles pour le moment. Créez-en un pour définir un niveau de service réutilisable pour vos clients.",
     "allOrganizations": "Toutes les orgs",
     "actions": {
       "newSet": "Nouvel ensemble de modèles",

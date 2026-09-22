@@ -206,6 +206,164 @@ describe('network_check compiles to a managed network_monitors row (#5291 W04)',
     expect(buildCompiledNetworkMonitor(makeDef({ enabled: false } as never)).isActive).toBe(false);
   });
 
+  /**
+   * #6352: `buildMonitorCommand` (`services/monitorCommands.ts`) spreads
+   * `network_monitors.config` verbatim into the agent command payload — no
+   * translation layer exists there. So every key the compiler writes into
+   * `config` for a given `checkType` MUST already be the exact key the
+   * agent's handler for that check type reads
+   * (`agent/internal/heartbeat/handlers_monitor.go`), even though the kind's
+   * own condition schema (`packages/shared/src/validators/monitors.ts`,
+   * `network_check`) uses a different name (`expectStatus`) for it. This
+   * table pins that contract per checkType so a future compiled field can't
+   * silently reintroduce the same mismatch.
+   */
+  it.each([
+    {
+      label: 'tcp_port',
+      condition: { checkType: 'tcp_port', target: '10.0.0.1', port: 8080, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { port: 8080 }, // agent: tools.GetPayloadInt(payload, "port", 443)
+    },
+    {
+      label: 'http_check with expectStatus set (2xx)',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 200, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 200 }, // agent: tools.GetPayloadInt(payload, "expectedStatus", 200)
+    },
+    {
+      label: 'http_check with expectStatus omitted',
+      condition: { checkType: 'http_check', target: 'https://example.com', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: {}, // expectStatus omitted -> agent falls back to its own default (200)
+    },
+    {
+      // #6510: a 3xx expectation can never be observed while the agent follows
+      // the redirect (default true) — it would evaluate the FINAL hop's status
+      // instead. The compiler must turn `followRedirects` off by default
+      // whenever `expectStatus` is itself a 3xx, or the check can never go
+      // healthy.
+      label: 'http_check with a 3xx expectStatus (redirect expectation)',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 301, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 301, followRedirects: false },
+    },
+    {
+      label: 'http_check with a 3xx expectStatus but followRedirects explicitly true',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 301, followRedirects: true, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 301 }, // explicit true == agent's own default, no need to send it
+    },
+    {
+      label: 'http_check with a 2xx expectStatus but followRedirects explicitly false',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 200, followRedirects: false, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 200, followRedirects: false },
+    },
+    {
+      label: 'http_check with followRedirects explicitly false and expectStatus omitted',
+      condition: { checkType: 'http_check', target: 'https://example.com', followRedirects: false, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { followRedirects: false }, // explicit false wins even with no 3xx expectation in play
+    },
+    {
+      // Lower boundary of the 3xx range: 300 itself must trip the implicit default.
+      label: 'http_check with expectStatus at the 3xx lower boundary (300)',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 300, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 300, followRedirects: false },
+    },
+    {
+      // Upper boundary of the 3xx range: 399 itself must trip the implicit default.
+      label: 'http_check with expectStatus at the 3xx upper boundary (399)',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 399, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 399, followRedirects: false },
+    },
+    {
+      // Just outside the range on either side: neither should trip the default.
+      label: 'http_check with expectStatus just below the 3xx range (299)',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 299, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 299 },
+    },
+    {
+      label: 'http_check with expectStatus just above the 3xx range (400)',
+      condition: { checkType: 'http_check', target: 'https://example.com', expectStatus: 400, pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: { expectedStatus: 400 },
+    },
+    {
+      label: 'icmp_ping',
+      condition: { checkType: 'icmp_ping', target: '10.0.0.2', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: {},
+    },
+    {
+      label: 'dns_check',
+      condition: { checkType: 'dns_check', target: 'example.com', pollingIntervalSeconds: 60, timeoutSeconds: 5, consecutiveFailures: 2 },
+      expectedConfig: {},
+    },
+  ])('compiles $label config keys to the agent payload keys it reads', ({ condition, expectedConfig }) => {
+    const row = buildCompiledNetworkMonitor(makeDef({ condition } as never));
+    expect(row.config).toEqual(expectedConfig);
+  });
+
+  /**
+   * Closes the loop the table above stops short of: `buildCompiledNetworkMonitor`
+   * only proves the compiler's OUTPUT object carries the right key. The actual
+   * bug (#6352) was in what happens to that `config` object one layer further
+   * downstream — `buildMonitorCommand` (`services/monitorCommands.ts`) spreads it
+   * verbatim into the agent command payload. This drives a compiled row through
+   * `buildMonitorCommand` too, so a regression in that spread (e.g. someone
+   * renaming or filtering keys there) would fail here even if the compiler's
+   * own output looked correct.
+   */
+  it('the compiled http_check config keys survive buildMonitorCommand into the agent payload', async () => {
+    const { buildMonitorCommand } = await import('../monitorCommands');
+    const row = buildCompiledNetworkMonitor(
+      makeDef({
+        condition: {
+          checkType: 'http_check',
+          target: 'https://example.com',
+          expectStatus: 301,
+          pollingIntervalSeconds: 60,
+          timeoutSeconds: 5,
+          consecutiveFailures: 2,
+        },
+      } as never),
+    );
+    const command = buildMonitorCommand({
+      id: 'nm0000000-0000-4000-8000-000000000001',
+      monitorType: row.monitorType,
+      target: row.target,
+      config: row.config,
+      timeout: row.timeout as number,
+    });
+    expect(command.payload.expectedStatus).toBe(301);
+    expect(command.payload).not.toHaveProperty('expectStatus');
+  });
+
+  /**
+   * #6510: `followRedirects` is the new key this PR introduces, and its
+   * entire purpose is to reach the agent's `GetPayloadBool(payload,
+   * "followRedirects", true)` read — the exact same "does the compiled key
+   * survive the verbatim `buildMonitorCommand` spread" question #6352 was
+   * about, just for a different field. Assert it explicitly rather than
+   * trusting the `expectedStatus` case above to stand in for it.
+   */
+  it('the compiled http_check followRedirects:false key survives buildMonitorCommand into the agent payload', async () => {
+    const { buildMonitorCommand } = await import('../monitorCommands');
+    const row = buildCompiledNetworkMonitor(
+      makeDef({
+        condition: {
+          checkType: 'http_check',
+          target: 'https://example.com',
+          expectStatus: 301,
+          pollingIntervalSeconds: 60,
+          timeoutSeconds: 5,
+          consecutiveFailures: 2,
+        },
+      } as never),
+    );
+    const command = buildMonitorCommand({
+      id: 'nm0000000-0000-4000-8000-000000000001',
+      monitorType: row.monitorType,
+      target: row.target,
+      config: row.config,
+      timeout: row.timeout as number,
+    });
+    expect(command.payload.followRedirects).toBe(false);
+  });
+
   it('INSERTS the managed row on a first compile', async () => {
     const tx = makeTx();
     await compileMonitorInTx(tx, makeDef());

@@ -43,6 +43,7 @@ import { getRedis } from './redis';
 import { teardownDisconnectedSessions } from './remoteSessionTeardown';
 import { commitDesktopTerminalIntent, type TerminalSessionRow } from './remoteDesktopTerminalIntent';
 import { resolveDesktopSessionPolicy } from './remoteAccessPolicy';
+import { getEffectiveMfaPolicy } from './mfaPolicy';
 import { remoteDesktopFenceRequired } from '../config/env';
 
 // ---------------------------------------------------------------------------
@@ -183,12 +184,11 @@ export interface RevocationRecheckRow {
     partnerId: string;
     mfaProtected: boolean;
   };
-  orgMembership: { roleId: string; siteIds: string[] | null; forceMfa: boolean } | null;
+  orgMembership: { roleId: string; siteIds: string[] | null } | null;
   partnerMembership: {
     roleId: string;
     orgAccess: string;
     orgIds: string[] | null;
-    forceMfa: boolean;
   } | null;
   /**
    * Whether the session's org is still a live org under the caller's partner.
@@ -237,11 +237,17 @@ export type RecheckVerdict = { ok: true } | { ok: false; reason: RevocationReaso
  * Ordering is deliberate: cheapest / most conclusive first, and the site-scope
  * check comes AFTER membership so a removed member is reported as
  * `membership_removed` rather than as a site problem.
+ *
+ * `mfaRequired` is the EFFECTIVE MFA policy verdict for the session's user
+ * (`resolveLeaseMfaRequired`), never the role's raw `force_mfa` (#6107): login
+ * and the lease must agree on the kill switch, the enrolment grace window and
+ * org/partner `requireMfa`, or an admin who may sign in cannot hold a desktop.
  */
 export function evaluateRevocationRecheck(
   row: RevocationRecheckRow | null,
   nowMs: number,
   hardDeadlineMs: number,
+  mfaRequired = false,
 ): RecheckVerdict {
   if (!row) return { ok: false, reason: 'session_ended' };
 
@@ -268,7 +274,6 @@ export function evaluateRevocationRecheck(
     return { ok: false, reason: 'membership_removed' };
   }
 
-  let forceMfa: boolean;
   if (user.orgId !== null) {
     // Org-scoped user: the session's org must be their own org, and the
     // membership row (which carries role + site ceiling) must still exist.
@@ -280,7 +285,6 @@ export function evaluateRevocationRecheck(
         return { ok: false, reason: 'site_scope_lost' };
       }
     }
-    forceMfa = orgMembership.forceMfa;
   } else {
     // Partner-scoped user: partner membership must exist, still grant org
     // access, and still cover this org — and the org itself must be live.
@@ -296,14 +300,13 @@ export function evaluateRevocationRecheck(
     if (!row.sessionOrgUsable) {
       return { ok: false, reason: 'membership_removed' };
     }
-    forceMfa = partnerMembership.forceMfa;
   }
 
   // MFA per CURRENT policy. The force_mfa flip itself already advances
   // permissions_epoch (2026-08-06-b-live-authorization.sql), so this catches the
-  // other direction: a role that forces MFA whose holder no longer has any
-  // factor (e.g. every passkey deleted) must not keep a live desktop.
-  if (forceMfa && !user.mfaProtected) {
+  // other direction: policy requires MFA and the holder no longer has any
+  // usable factor (e.g. every passkey deleted or disabled).
+  if (mfaRequired && !user.mfaProtected) {
     return { ok: false, reason: 'mfa_required' };
   }
 
@@ -323,8 +326,6 @@ export async function loadRevocationRecheckRow(
 ): Promise<RevocationRecheckRow | null> {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
-      const orgRole = sql<boolean | null>`org_role.force_mfa`;
-      const partnerRole = sql<boolean | null>`partner_role.force_mfa`;
       const [found] = await db
         .select({
           sessionId: remoteSessions.id,
@@ -350,8 +351,12 @@ export async function loadRevocationRecheckRow(
           userOrgId: users.orgId,
           userPartnerId: users.partnerId,
           userMfaEnabled: users.mfaEnabled,
+          // Usable passkeys only — same filter as login's userHasUsablePasskey.
+          // A disabled passkey cannot satisfy MFA, so it must not count here.
           userHasPasskey: sql<boolean>`EXISTS (
-            SELECT 1 FROM ${userPasskeys} WHERE ${userPasskeys.userId} = ${users.id}
+            SELECT 1 FROM ${userPasskeys}
+            WHERE ${userPasskeys.userId} = ${users.id}
+              AND ${userPasskeys.disabledAt} IS NULL
           )`,
           userHasTrustedIdpMfa: sql<boolean>`EXISTS (
             SELECT 1 FROM ${userSsoIdentities}
@@ -366,11 +371,9 @@ export async function loadRevocationRecheckRow(
           )`,
           orgRoleId: organizationUsers.roleId,
           orgSiteIds: organizationUsers.siteIds,
-          orgForceMfa: orgRole,
           partnerRoleId: partnerUsers.roleId,
           partnerOrgAccess: partnerUsers.orgAccess,
           partnerOrgIds: partnerUsers.orgIds,
-          partnerForceMfa: partnerRole,
           sessionOrgUsable: sql<boolean>`EXISTS (
             SELECT 1 FROM ${organizations}
             WHERE ${organizations.id} = ${remoteSessions.orgId}
@@ -390,19 +393,11 @@ export async function loadRevocationRecheckRow(
           ),
         )
         .leftJoin(
-          sql`${roles} AS org_role`,
-          sql`org_role.id = ${organizationUsers.roleId}`,
-        )
-        .leftJoin(
           partnerUsers,
           and(
             eq(partnerUsers.userId, remoteSessions.userId),
             eq(partnerUsers.partnerId, users.partnerId),
           ),
-        )
-        .leftJoin(
-          sql`${roles} AS partner_role`,
-          sql`partner_role.id = ${partnerUsers.roleId}`,
         )
         .where(eq(remoteSessions.id, sessionId))
         .limit(1);
@@ -456,7 +451,6 @@ export async function loadRevocationRecheckRow(
           ? {
               roleId: found.orgRoleId,
               siteIds: found.orgSiteIds ?? null,
-              forceMfa: found.orgForceMfa === true,
             }
           : null,
         partnerMembership: found.partnerRoleId
@@ -466,13 +460,40 @@ export async function loadRevocationRecheckRow(
               // is treated as 'none' (fail closed), never as blanket access.
               orgAccess: found.partnerOrgAccess ?? 'none',
               orgIds: found.partnerOrgIds ?? null,
-              forceMfa: found.partnerForceMfa === true,
             }
           : null,
         sessionOrgUsable: found.sessionOrgUsable === true,
       } satisfies RevocationRecheckRow;
     }),
   );
+}
+
+/**
+ * Is MFA required for the session's user RIGHT NOW, per the same policy login
+ * enforces (`getEffectiveMfaPolicy`: kill switch, enrolment grace, org/partner
+ * `requireMfa`). Scope mirrors the recheck's own membership axis.
+ *
+ * `failClosed` is deliberately NOT passed: §6E says only a definitive negative
+ * revokes, and a settings-read blip is not one. A role-join failure throws and
+ * the caller answers `unavailable`.
+ */
+export async function resolveLeaseMfaRequired(row: RevocationRecheckRow): Promise<boolean> {
+  const policy = await getEffectiveMfaPolicy(
+    row.user.orgId !== null
+      ? {
+          scope: 'organization',
+          userId: row.session.userId,
+          orgId: row.session.orgId,
+          partnerId: row.user.partnerId,
+        }
+      : {
+          scope: 'partner',
+          userId: row.session.userId,
+          orgId: null,
+          partnerId: row.user.partnerId,
+        },
+  );
+  return policy.required;
 }
 
 /**
@@ -687,7 +708,23 @@ export async function renewRevocationLease(
     hardDeadline = now;
   }
 
-  const verdict = evaluateRevocationRecheck(row, now, hardDeadline);
+  let verdict = evaluateRevocationRecheck(row, now, hardDeadline);
+  // The MFA policy is consulted ONLY for a factorless user whose session would
+  // otherwise renew: a user holding a factor pays no extra queries, and a
+  // session that is ending anyway never triggers the enrolment-grace grant.
+  if (verdict.ok && row && !row.user.mfaProtected) {
+    let mfaRequired: boolean;
+    try {
+      mfaRequired = await resolveLeaseMfaRequired(row);
+    } catch (err) {
+      console.error(
+        `[RevocationLease] MFA policy read failed for session ${sessionId} (returning lease_unavailable):`,
+        err instanceof Error ? err.message : err,
+      );
+      return { status: 'unavailable' };
+    }
+    verdict = evaluateRevocationRecheck(row, now, hardDeadline, mfaRequired);
+  }
   if (verdict.ok) {
     return {
       status: 'renewed',

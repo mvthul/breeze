@@ -27,6 +27,7 @@ async function resolveBrandingByDomain(domain: string) {
         primaryColor: portalBranding.primaryColor,
         secondaryColor: portalBranding.secondaryColor,
         accentColor: portalBranding.accentColor,
+        chromeAccent: portalBranding.chromeAccent,
         customDomain: portalBranding.customDomain,
         domainVerified: portalBranding.domainVerified,
         welcomeMessage: portalBranding.welcomeMessage,
@@ -95,6 +96,7 @@ brandingRoutes.get('/branding', async (c) => {
       primaryColor: portalBranding.primaryColor,
       secondaryColor: portalBranding.secondaryColor,
       accentColor: portalBranding.accentColor,
+      chromeAccent: portalBranding.chromeAccent,
       customDomain: portalBranding.customDomain,
       domainVerified: portalBranding.domainVerified,
       welcomeMessage: portalBranding.welcomeMessage,
@@ -114,7 +116,8 @@ brandingRoutes.get('/branding', async (c) => {
       enableSupportUsage: portalBranding.enableSupportUsage,
       enableService: portalBranding.enableService,
       enableDocuments: portalBranding.enableDocuments,
-      enableLifecycle: portalBranding.enableLifecycle
+      enableLifecycle: portalBranding.enableLifecycle,
+      enableNetworkVisibility: portalBranding.enableNetworkVisibility
     })
     .from(portalBranding)
     .where(eq(portalBranding.orgId, auth.user.orgId))

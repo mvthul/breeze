@@ -2,7 +2,7 @@
   "expo": {
     "name": "Breeze RMM",
     "slug": "breeze-rmm",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -65,6 +65,7 @@
         "backgroundColor": "#0A0A0B"
       },
       "package": "com.breeze.rmm",
+      "versionCode": 1,
       "permissions": [
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
@@ -135,7 +136,8 @@
           "organization": "olivetech-ks",
           "project": "breeze-mobile"
         }
-      ]
+      ],
+      "./src/config/androidUploadSigning.js"
     ],
     "extra": {
       "eas": {

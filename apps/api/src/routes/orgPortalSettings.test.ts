@@ -81,6 +81,11 @@ vi.mock('../db/schema', () => ({
     enableBackups: 'enableBackups',
     enableReports: 'enableReports',
     enableSupportUsage: 'enableSupportUsage',
+    enableService: 'enableService',
+    enableDocuments: 'enableDocuments',
+    enableLifecycle: 'enableLifecycle',
+    enableNetworkVisibility: 'enableNetworkVisibility',
+    chromeAccent: 'chromeAccent',
     supportEmail: 'supportEmail',
     supportPhone: 'supportPhone',
     welcomeMessage: 'welcomeMessage',
@@ -116,6 +121,8 @@ const FULL_ROW = {
   enableService: false,
   enableDocuments: false,
   enableLifecycle: false,
+  enableNetworkVisibility: false,
+  chromeAccent: 'navy',
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome',
@@ -172,6 +179,8 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableService: false,
       enableDocuments: false,
       enableLifecycle: false,
+      enableNetworkVisibility: false,
+      chromeAccent: 'navy',
       supportEmail: 'help@msp.example',
       supportPhone: null,
       welcomeMessage: 'Welcome',
@@ -204,6 +213,8 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableService: false,
       enableDocuments: false,
       enableLifecycle: false,
+      enableNetworkVisibility: false,
+      chromeAccent: null,
       supportEmail: null,
       supportPhone: null,
       welcomeMessage: null,
@@ -227,7 +238,8 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableSecurity: false,
       enableBackups: false,
       enableReports: false,
-      enableSupportUsage: false
+      enableSupportUsage: false,
+      enableNetworkVisibility: false
     });
   });
 
@@ -320,6 +332,32 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     expect((await patch({ supportEmail: 'nope' })).status).toBe(400);
   });
 
+  it('persists a valid chromeAccent key', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, chromeAccent: 'plum' }]);
+    const res = await patch({ chromeAccent: 'plum' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.chromeAccent).toBe('plum');
+
+    const { db } = await import('../db');
+    const valuesArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(valuesArg.chromeAccent).toBe('plum');
+  });
+
+  it('accepts null to clear chromeAccent back to the default', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, chromeAccent: null }]);
+    const res = await patch({ chromeAccent: null });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.chromeAccent).toBeNull();
+  });
+
+  it('400 on an unknown chromeAccent key', async () => {
+    const res = await patch({ chromeAccent: 'cobalt' });
+    expect(res.status).toBe(400);
+  });
+
   it('404 when partner scope cannot access the org', async () => {
     resetAuth({ canAccessOrg: () => false });
     const res = await patch({ enableTickets: false });
@@ -340,14 +378,16 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableReports: true,
       enableService: true,
       enableDocuments: false,
-      enableLifecycle: true
+      enableLifecycle: true,
+      enableNetworkVisibility: true
     }]);
 
     const res = await patch({
       enableDashboard: true,
       enableReports: true,
       enableService: true,
-      enableLifecycle: true
+      enableLifecycle: true,
+      enableNetworkVisibility: true
     });
 
     expect(res.status).toBe(200);
@@ -359,7 +399,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableSupportUsage: false,
       enableService: true,
       enableDocuments: false,
-      enableLifecycle: true
+      enableLifecycle: true,
+      enableNetworkVisibility: true
     });
     expect(onPortalFlagsChanged).toHaveBeenCalledWith({
       orgId: ORG_ID,
@@ -368,7 +409,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableDashboard: true,
         enableReports: true,
         enableService: true,
-        enableLifecycle: true
+        enableLifecycle: true,
+        enableNetworkVisibility: true
       },
       current: {
         enableDashboard: true,
@@ -378,7 +420,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableSupportUsage: false,
         enableService: true,
         enableDocuments: false,
-        enableLifecycle: true
+        enableLifecycle: true,
+        enableNetworkVisibility: true
       }
     });
   });

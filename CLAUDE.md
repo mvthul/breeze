@@ -48,7 +48,7 @@ API connects to Postgres as unprivileged `breeze_app`. Every tenant-scoped table
 
 **Workflow for a new tenant-scoped table:**
 1. Pick a shape; add policies in the same migration that creates the table — never defer.
-   - **Every composite FK that references an `org_id` column (`(x, org_id) → parent(id, org_id)`) MUST be `DEFERRABLE INITIALLY IMMEDIATE`.** Org merge runs `SET CONSTRAINTS ALL DEFERRED` and re-points parent and child `org_id` in separate statements; a non-deferrable one aborts the merge with 23503. Enforced by `orgLifecycleFoundations.integration.test.ts` ("merge contract"), which only runs under **Integration Tests** (shard 2) — a unit-green PR still goes red there (#4585 did).
+   - **Every composite FK that references an `org_id` column (`(x, org_id) → parent(id, org_id)`) MUST be `DEFERRABLE INITIALLY IMMEDIATE`.** Org merge runs `SET CONSTRAINTS ALL DEFERRED` and re-points parent and child `org_id` in separate statements; a non-deferrable one aborts the merge with 23503. Enforced by `orgLifecycleFoundations.integration.test.ts` ("merge contract"), which only runs under **Integration Tests** (one of the 8 shards — which one shifted when the job went 4→8 shards, so don't assume a specific shard number) — a unit-green PR still goes red there (#4585 did).
 2. Migration must be idempotent (`IF NOT EXISTS` / `DO $$`). Never edit a shipped migration.
 3. Add to the relevant allowlist in `rls-coverage.integration.test.ts` in the same PR (shapes 2-6).
 4. **Register the table in every cascade list that applies (see below). RLS coverage does NOT imply cascade coverage — they are separate contracts, and this step is the one that gets missed.** Adding a **column** to an already-registered table is not exempt: see the export-policy row.
@@ -63,6 +63,7 @@ API connects to Postgres as unprivileged `breeze_app`. Every tenant-scoped table
 | has a `device_id` column | `CORE_DEVICE_CASCADE_DELETE_TABLES` in `routes/devices/core.ts` | `cascadeDelete.test.ts` (**Test API**) |
 | has `device_id` **and** a denormalized `org_id` | also `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (same file) | `moveOrg.coverage.test.ts` (**Test API**) |
 | has a `ticket_id` column **and** a denormalized `org_id` (ticket-linked child table, e.g. `ticket_attachments`) | `TICKET_ORG_DENORMALIZED_TABLES` in `services/ticketOrgMoveLockOrder.ts` **and** `CUSTOM_ORG_REWRITE_TABLES` in `routes/devices/core.ts`, in the same relative order on both | `ticketOrgMoveLockOrder.test.ts` (**Test API**) checks the two lists agree with each other, not with the schema — **runtime only (no completeness test) — fails on the admin move action, not in CI** |
+| has an `org_id` column (**always** — same trigger as the cascade list) | a merge policy in `services/orgMergeRegistry.ts` (`repoint` for plain rows; there is **no default**, a table without an entry is an error) | `orgMerge.test.ts` (**Test API** — the merge engine walks the cascade order and throws `no merge policy registered for '<table>'`; it reds only in the FULL unit suite, never in a touched-file run) + `orgMergeRegistry.integration.test.ts` (**Integration Tests**) |
 | is append-only (REVOKE DELETE + immutability trigger) | also `AUDIT_ADMIN_REQUIRED_TABLES` in `tenantCascade.ts` | runtime `permission denied` during erasure |
 | is in `CORE_ORG_CASCADE_DELETE_ORDER` — **including when you only add a COLUMN to one** | `CORE_TENANT_EXPORT_POLICY` in `services/tenantExportPolicyRegistry.ts` | `tenant-export-policy.integration.test.ts` + `tenantExportErasureRoundtrip.integration.test.ts` (**Integration Tests**) |
 
@@ -139,6 +140,32 @@ if (!(err instanceof ActionError)) showToast({ type: 'error', ... }); // non-401
 ```
 
 The `no-silent-mutations` test (`apps/web/src/lib/__tests__/no-silent-mutations.test.ts`) guards the adopted set. Legitimate exceptions (typed service layers, aggregate/partial-success handlers with inline error UI) are recorded in `apps/web/src/lib/runActionAllowlist.ts`. Spec: `docs/superpowers/specs/web-ui/2026-05-15-ws-a-action-feedback-design.md`.
+
+### Settings — one concept, one home
+
+Rules from the 2026-09-17 billing/ticketing settings audit
+(`docs/superpowers/specs/web-ui/2026-09-17-billing-ticketing-settings-audit.md`),
+enforced going forward for every settings surface, not just billing/ticketing:
+
+1. **One concept, one home.** A setting is edited in exactly one place per level.
+2. **Settings live with their domain.** Billing settings under Billing, ticketing
+   under Ticketing. Actions and reports are not settings.
+3. **Two levels, one direction.** Partner default → org override → snapshotted on
+   the document. The org always wins; a stated exception must say so in the UI
+   where it applies.
+4. **One inheritance control.** Blank = inherit; the field always shows the
+   inherited *value* and where it comes from.
+5. **One resolver per concept**, used by draft, issue and render.
+6. **One snapshot moment.** Whatever prints on a customer document is frozen when
+   the document becomes customer-visible.
+7. **One save pattern per screen type.** Forms: page Save. Lists: row drawer Save.
+   Switches with immediate effect: autosave with a toast. Never mixed in a card.
+8. **Every screen is in the nav, at one URL.** Old URLs redirect. Enforced by
+   `apps/web/src/lib/__tests__/settingsPageRegistry.test.ts`.
+9. **A PR that adds a setting states its home, level, resolver, and the number of
+   places the concept is configured before and after.** A count that goes up needs
+   a removal plan. Required in the PR description for any PR touching
+   `pages/settings/**` or a `*Settings*` component — see the PR template.
 
 ---
 
@@ -240,7 +267,7 @@ Single-PR fixes and small features don't need this — it's for work with waves.
 ## Testing Standards
 
 ### Frameworks & Configuration
-- **API**: Vitest — `apps/api/vitest.config.ts` (unit), `vitest.config.rls.ts` (RLS), `vitest.integration.config.ts` (integration)
+- **API**: Vitest — `apps/api/vitest.config.ts` (unit), `vitest.config.rls.ts` (RLS session-context contract, `test:rls`), `vitest.config.rls-coverage.ts` (RLS coverage contract, `test:rls-coverage`), `vitest.integration.config.ts` (integration)
 - **Web**: Vitest + jsdom — `apps/web/vitest.config.ts`
 - **Agent**: Go standard `testing` package — `go test -race ./...`
 - **Shared**: Vitest — `packages/shared/vitest.config.ts`
@@ -260,7 +287,7 @@ For test-writing conventions (Drizzle mock patterns, table-driven Go tests, vali
 - `test-api`, `test-web`, `test-agent` are **required** jobs on PRs
 - New test files are auto-discovered — no CI config changes needed
 - Go coverage is uploaded as artifact; no threshold enforced yet
-- Integration tests run in the **`integration-test`** job (4 shards), which **blocks PRs**: it carries no `continue-on-error`, and `ci-success` hard-fails on `needs.integration-test.result`. Do not hand-dispatch CI to get an integration run on a PR that targets `main` — it already ran. The `continue-on-error: ${{ github.event_name == 'pull_request' }}` in `ci.yml` belongs to the separate **`smoke-test`** job (Docker image build + stack boot + endpoint smoke), which is non-blocking on PRs and required on main. A green PR can still redden main, but through a stale base or a stacked branch (see the tenancy section above), not through a skipped integration run
+- Integration tests run in the **`integration-test`** job (8 shards), which **blocks PRs**: it carries no `continue-on-error`, and `ci-success` hard-fails on `needs.integration-test.result`. Do not hand-dispatch CI to get an integration run on a PR that targets `main` — it already ran. The `continue-on-error: ${{ github.event_name == 'pull_request' }}` in `ci.yml` belongs to the separate **`smoke-test`** job (Docker image build + stack boot + endpoint smoke), which is non-blocking on PRs and required on main. A green PR can still redden main, but through a stale base or a stacked branch (see the tenancy section above), not through a skipped integration run
 
 ### Running Tests Locally
 ```bash
@@ -276,11 +303,18 @@ pnpm --filter @breeze/api test --run src/routes/auth.test.ts
 cd apps/api && npx vitest run src/routes/auth.test.ts
 
 # NOTE: `pnpm test` does NOT run the RLS/integration contract suites
-# (separate vitest configs: vitest.config.rls.ts, vitest.integration.config.ts).
+# (separate vitest configs: vitest.config.rls.ts, vitest.config.rls-coverage.ts,
+# vitest.integration.config.ts).
 # Local green ≠ CI green — run those explicitly when touching tenancy/cascade code.
 # They need real Postgres+Redis. Per-worktree copy (safe alongside other sessions):
 pnpm test-stack up       # private pg+redis for this worktree (docker-compose.test.yml under -p)
 pnpm test-stack down     # tear it down when finished — nothing does this for you
+
+# The RLS COVERAGE contract (rls-coverage.integration.test.ts) has its OWN config and is
+# EXCLUDED from both of the others — pointing either at it prints "No test files found"
+# and exits 1, which reads like a failure but means it never ran. Run it the way CI does:
+DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage
+# `test:rls` (vitest.config.rls.ts) is a different suite: the session-context contract.
 
 # Go agent (with race detection)
 cd agent && go test -race ./...

@@ -260,6 +260,17 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/pax8SyncService.ts': 'every /pax8 route passes the global capability middleware in routes/pax8.ts',
   'services/policyEvaluationService.ts': 'partner-policy writes gated at routes/policyManagement/actions.ts; workers are system context',
   'services/scriptClone.ts': 'gated via resolveScriptCloneScope → resolveScriptCreateScope (services/scriptWrite.ts), which calls canManagePartnerWidePolicies before any partner-wide insert',
+  // #6008 W01. The scanner is file-local; both gates are one import away.
+  'routes/backup/providers.ts': 'every connection write calls requireProviderPartnerAdmin (routes/backup/providerAccess.ts), which calls canManagePartnerWidePolicies and returns 403 + PARTNER_WIDE_WRITE_DENIED_MESSAGE',
+  'services/backupProviders/mapping.ts': 'remapCustomer has one caller, PUT /backup/providers/customers/:id/mapping, which passes requireProviderPartnerAdmin (→ canManagePartnerWidePolicies) before it is reached',
+  // #6008 W02. persistVendorSnapshot has exactly one caller, syncConnectionById
+  // (jobs/backupProviderSync.ts), invoked only from the backup-provider-sync
+  // BullMQ worker under system DB context with no caller and no auth context —
+  // it takes a connection id from a job payload/advisory lock, not from a
+  // request, and every backupProviderCustomers row it writes takes the
+  // connection's OWN partner_id (never a caller-supplied one). The one
+  // caller-facing write to this table, remapCustomer, is the entry above.
+  'services/backupProviders/persist.ts': 'persistVendorSnapshot runs only inside the backup-provider-sync worker under system context, invoked from a job payload with no caller to gate; it writes each row under the syncing connection\'s own partner_id',
   // W01a (#5612). cutScriptVersion's only write to `scripts` is
   // `.set({ version, updatedAt })` on a row it just located by id and locked
   // FOR UPDATE — it never reads or writes org_id/partner_id, so it can neither
@@ -308,6 +319,10 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- org lifecycle (org lifecycle wave 2, #4074) --------------------------
   'services/orgMerge.ts': 'org_merge_events writes run under system context from the merge engine; the HTTP surface is gated by routes/orgMerge.ts\'s requireScope(partner,system) + requireOrgWrite + MFA with partner ownership and a fresh raw partner-member selection check for both merge participants — not a partner-wide policy table. Every write is already scoped to orgs the caller could act on individually; gating on canManagePartnerWidePolicies would incorrectly block partner members with plain org-write access from merging orgs they already manage.',
   'services/orgArchive.ts': 'archive/restore writes run under system context from the org-lifecycle service; the HTTP surface is gated by routes/orgArchive.ts\'s requireScope(partner,system) + requireOrgWrite + MFA, partner ownership of the target, AND the caller\'s own partner_users.org_ids selection (partnerMemberMayReachOrg, fail-closed for org_access=none) — organizations is not a partner-wide policy table. Every write is scoped to one org the caller may manage; gating on canManagePartnerWidePolicies would incorrectly block partner members with plain org-write access from archiving or restoring an org they already manage.',
+  // --- partner sending domains (spec 2026-09-17 W02) -----------------------
+  'services/emailDomains/domainRelease.ts': 'releaseSendingDomainsForPartner has no caller-facing surface at all: it is invoked only by cascadeDeletePartner and finalizePartnerOffboarding, both of which run in system context on a partner already being destroyed, and it takes the partner id from those functions rather than from any request. It writes exactly two things — an outbox row and provider_domain_id = NULL — and creates no partner-owned configuration, so there is no partner-wide policy decision for canManagePartnerWidePolicies to gate.',
+  'services/emailDomains/sendingDomainService.ts': 'the partner-wide gate for every caller-facing sending-domain write lives one layer up, in routes/partnerSendingDomains.ts, which calls canManagePartnerWidePolicies on all six mutating routes; this service takes the partner id from the verified auth context its route passed, never from request input, and its remaining callers are the platform-admin routes (already behind platformAdminMiddleware + requireMfa) and the sending-domains worker, which has no caller at all',
+  'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
 };
 
 /** Table export names whose rows can be partner-owned (org_id absent or nullable). */

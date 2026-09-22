@@ -186,7 +186,6 @@ function describeRehomed(rehomed: Array<{ table: string; count: number }>): stri
 // discovered_assets' dedupe key is `ip_address` (discovered_assets_org_ip_unique).
 const DISCOVERED_ASSET_KEY = ['ip_address'] as const;
 const DISCOVERED_ASSET_CHILDREN: readonly ChildRef[] = [
-  { table: 'network_monitors', column: 'asset_id' },
   { table: 'snmp_devices', column: 'asset_id' },
   { table: 'unifi_clients', column: 'discovered_asset_id' },
   { table: 'unifi_devices', column: 'discovered_asset_id' },
@@ -205,6 +204,12 @@ const DISCOVERED_ASSET_CHILDREN: readonly ChildRef[] = [
  * hundreds of tables earlier. See `MergePolicyPhase` in orgMerge.ts.
  */
 const resolveDiscoveredAssets: CustomMergeExecutor = async (loser, survivor) => {
+  // Same-IP collision is not same-site identity. Disable/detach before deleting
+  // the source asset; retain monitor IDs, source-site history and canonical nodes.
+  await dbModule.db.execute(sql`SELECT breeze_detach_topology_monitor_authority('asset',a.id,a.org_id,a.site_id,'asset_merge_collision')
+    FROM discovered_assets a WHERE a.org_id=${uuid(loser)} AND EXISTS
+    (SELECT 1 FROM discovered_assets b WHERE b.org_id=${uuid(survivor)} AND b.ip_address=a.ip_address)`);
+
   const { dropped, rehomed } = await rehomeChildrenThenDelete(
     'discovered_assets',
     DISCOVERED_ASSET_KEY,
@@ -343,6 +348,46 @@ const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
      WHERE org_id = ${uuid(loser)}
        AND device_id IS NOT NULL`);
 
+  // Recipe library E2 (#6167). THREE target pointers to sever, all in the
+  // RESOLVE phase and all for the same reason the task's device detach above
+  // is here: the move phase repoints `devices`, `tickets` and `contacts` to the
+  // survivor while these targets stay with the loser. For contact_id that is
+  // not merely untidy — ai_operator_task_targets_contact_org_fk is a COMPOSITE
+  // (contact_id, org_id) FK, so a contact repointed to the survivor leaves the
+  // pair unresolvable and the merge aborts at COMMIT with 23503.
+  //
+  // Deliberately NOT restricted to live tasks: a terminal task's target is
+  // leaving the tenant too, and its evidence should say so. Stamping
+  // 'org_merged' here first also means the device-move trigger's
+  // COALESCE(detached_reason, 'device_moved') preserves the REAL reason when
+  // `devices` repoints later in the move phase. All three pointers and the
+  // stamp go in ONE statement: ai_operator_task_targets_one_pointer_chk
+  // requires the stamp the moment the last pointer is null.
+  const targetsDetached = await run(sql`
+    UPDATE ai_operator_task_targets
+       SET device_id = NULL,
+           ticket_id = NULL,
+           contact_id = NULL,
+           detached_at = COALESCE(detached_at, now()),
+           detached_reason = COALESCE(detached_reason, 'org_merged'),
+           state = 'detached',
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND (device_id IS NOT NULL OR ticket_id IS NOT NULL OR contact_id IS NOT NULL)`);
+
+  // The frozen provider identity survives — external_id and principal_label are
+  // the evidence of WHO the task was about — but the connection pointers must
+  // go: m365_connections repoint-dedupes to the survivor and
+  // google_workspace_connections keeps the survivor's row, and both FKs here
+  // are composite (connection_id, org_id).
+  const accountsDetached = await run(sql`
+    UPDATE ai_operator_task_target_accounts
+       SET m365_connection_id = NULL,
+           google_connection_id = NULL,
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND (m365_connection_id IS NOT NULL OR google_connection_id IS NOT NULL)`);
+
   return {
     moved: 0,
     dropped: 0,
@@ -362,6 +407,20 @@ const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
             `ai_operator_tasks: detached ${detached} AI Operator task(s) from their target device — the `
             + 'devices move to the surviving organization while the task history stays behind, so the '
             + 'task keeps its frozen target label as evidence but no longer points at the device.',
+          ]
+        : []),
+      ...(targetsDetached > 0
+        ? [
+            `ai_operator_task_targets: detached ${targetsDetached} AI Operator task target(s) from their device, `
+            + 'ticket or contact — those records move to the surviving organization while the task history '
+            + 'stays behind, so each target keeps its frozen label as evidence but no longer points at a live record.',
+          ]
+        : []),
+      ...(accountsDetached > 0
+        ? [
+            `ai_operator_task_target_accounts: cleared the provider connection pointer on ${accountsDetached} `
+            + 'frozen account(s); the immutable external identifier and principal label are retained as '
+            + 'evidence of who the task was about.',
           ]
         : []),
     ],

@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { cn, formatBytes } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction } from '../../lib/runAction';
 import { formatTime } from './backupDashboardHelpers';
 import BareMetalRecoveryPanel from './BareMetalRecoveryPanel';
 import { useTranslation } from 'react-i18next';
@@ -434,6 +435,27 @@ function renderJson(value: unknown): string {
   }
 }
 
+// restoreFailureReason pulls the human-readable failure reason out of a
+// recovery's restore result. The agent now sets a terminal `error` naming
+// the first thing that went wrong (agent/internal/backup/bmr/bmr.go), which
+// the API persists into the restore job's result jsonb
+// (routes/backup/bmr.ts). Older recoveries — and any run whose failure was
+// only ever recorded as a warning — fall back to the first warning, so a
+// failed recovery is never presented with no reason at all (#5479).
+// Returns null when there is genuinely nothing to show.
+export function restoreFailureReason(result: Record<string, unknown> | null | undefined): string | null {
+  if (!result) return null;
+  const error = result.error;
+  if (typeof error === 'string' && error.trim() !== '') return error.trim();
+  const warnings = result.warnings;
+  if (Array.isArray(warnings)) {
+    for (const warning of warnings) {
+      if (typeof warning === 'string' && warning.trim() !== '') return warning.trim();
+    }
+  }
+  return null;
+}
+
 function DetailLine({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="rounded-md border bg-background/80 p-3">
@@ -715,22 +737,22 @@ export default function RecoveryBootstrapTab() {
 
     try {
       setCreating(true);
-      const response = await fetchWithAuth('/backup/bmr/tokens', {
-        method: 'POST',
-        body: JSON.stringify({
-          snapshotId: createSnapshotId,
-          restoreType: createRestoreType,
-          targetConfig: parsedTargetConfig,
-          expiresInHours,
-        }),
+      const data = await runAction({
+        request: () =>
+          fetchWithAuth('/backup/bmr/tokens', {
+            method: 'POST',
+            body: JSON.stringify({
+              snapshotId: createSnapshotId,
+              restoreType: createRestoreType,
+              targetConfig: parsedTargetConfig,
+              expiresInHours,
+            }),
+          }),
+        errorFallback: t('recoveryBootstrapTab.failedToCreateRecoveryToken'),
+        successMessage: 'Recovery token created.',
       });
 
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToCreateRecoveryToken'));
-      }
-
-      const payload = normalizeApiResponse(await response.json());
+      const payload = normalizeApiResponse(data);
       const createdToken = toTokenRecord(payload, {
         restoreType: createRestoreType,
         snapshotId: createSnapshotId,
@@ -806,6 +828,8 @@ export default function RecoveryBootstrapTab() {
       try {
         setPreviewingTokenId(tokenId);
         setError(undefined);
+        // runaction-exempt: inline-feedback handler. Failures land in the
+        // `error` banner and success in `tokenMessage` below (see catch/finally).
         const response = await fetchWithAuth('/backup/bmr/recover/authenticate', {
           method: 'POST',
           body: JSON.stringify({ token: token.token }),
@@ -850,6 +874,8 @@ export default function RecoveryBootstrapTab() {
       try {
         setRefreshingTokenId(tokenId);
         setError(undefined);
+        // runaction-exempt: inline-feedback handler. Failures land in the
+        // `error` banner and success in `tokenMessage` below.
         const response = await fetchWithAuth(`/backup/bmr/tokens/${encodeURIComponent(tokenId)}`, {
           method: 'DELETE',
         });
@@ -892,6 +918,8 @@ export default function RecoveryBootstrapTab() {
     try {
       setCreatingMedia(true);
       setError(undefined);
+      // runaction-exempt: inline-feedback handler. Failures land in the
+      // `error` banner and success in `tokenMessage` below.
       const response = await fetchWithAuth('/backup/bmr/media', {
         method: 'POST',
         body: JSON.stringify({
@@ -1397,6 +1425,15 @@ export default function RecoveryBootstrapTab() {
                       <p className="text-xs text-muted-foreground">{t('recoveryBootstrapTab.latestRestoreResultLinkedToThisToken')}</p>
                     </div>
                   </div>
+                  {restoreFailureReason(selectedToken.restoreResult) ? (
+                    <p
+                      className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+                      data-testid="recovery-restore-failure-reason"
+                    >
+                      <span className="font-semibold">Failure reason: </span>
+                      {restoreFailureReason(selectedToken.restoreResult)}
+                    </p>
+                  ) : null}
                   {selectedToken.restoreJobId || selectedToken.restoreResult || selectedToken.linkedRestoreJob?.status ? (
                     <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                       <DetailLine label="Restore job ID" value={selectedToken.restoreJobId ?? '-'} />

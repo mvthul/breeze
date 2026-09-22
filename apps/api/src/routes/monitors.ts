@@ -12,7 +12,7 @@ import { enqueueMonitorCheck } from '../jobs/monitorWorker';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { buildMonitorCommand } from '../services/monitorCommands';
 import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
-import { selectNetworkExecutor } from '../services/networkExecutorSelection';
+import { selectMonitorExecutor } from '../services/networkExecutorSelection';
 
 // --- Helpers ---
 
@@ -57,8 +57,10 @@ type AuthContext = {
  * partner-wide row owns no org, so it can carry no org-scoped discovered asset
  * and therefore no site; site gating for it is vacuously "no site".
  */
-async function getMonitorSiteId(monitor: { orgId: string | null; assetId: string | null }): Promise<string | null> {
-  if (!monitor.orgId || !monitor.assetId) return null;
+async function getMonitorSiteId(monitor: { orgId: string | null; assetId: string | null; siteId?: string | null }): Promise<string | null> {
+  if (!monitor.orgId) return null;
+  if (monitor.siteId) return monitor.siteId;
+  if (!monitor.assetId) return null;
   const [asset] = await db
     .select({ siteId: discoveredAssets.siteId })
     .from(discoveredAssets)
@@ -68,7 +70,7 @@ async function getMonitorSiteId(monitor: { orgId: string | null; assetId: string
 }
 
 async function hasMonitorSiteAccess(
-  monitor: { orgId: string | null; assetId: string | null },
+  monitor: { orgId: string | null; assetId: string | null; siteId?: string | null },
   permissions: UserPermissions | undefined,
 ): Promise<boolean> {
   if (!permissions?.allowedSiteIds) return true;
@@ -188,7 +190,8 @@ async function requireAlertRuleAccess(auth: AuthContext, ruleId: string, permiss
     .select({
       rule: networkMonitorAlertRules,
       monitorOrgId: networkMonitors.orgId,
-      monitorAssetId: networkMonitors.assetId
+      monitorAssetId: networkMonitors.assetId,
+      monitorSiteId: networkMonitors.siteId
     })
     .from(networkMonitorAlertRules)
     .innerJoin(networkMonitors, eq(networkMonitorAlertRules.monitorId, networkMonitors.id))
@@ -213,7 +216,7 @@ async function requireAlertRuleAccess(auth: AuthContext, ruleId: string, permiss
   // their allowlist (same org). Mirror requireMonitorAccess's site gate — the
   // create path (POST /alerts) already goes through it. Empty/unset allowlist
   // (partner/system scope) = full access.
-  if (!(await hasMonitorSiteAccess({ orgId: monitorOrgId, assetId: row.monitorAssetId }, permissions))) {
+  if (!(await hasMonitorSiteAccess({ orgId: monitorOrgId, assetId: row.monitorAssetId, siteId: row.monitorSiteId }, permissions))) {
     return { error: 'Access to this site denied', status: 403 } as const;
   }
 
@@ -237,29 +240,23 @@ function validateMonitorConfigForType(
 }
 
 /**
- * Route-side wrapper: the site-ACCESS check (a 403 axis that RLS does not
- * defend) stays here; the agent pick is the shared service. The org-wide
+ * Route-side wrapper maps the shared policy's site-access denial to the
+ * existing 403 response. RLS only defends the org axis. The org-wide
  * fallback for an asset-BOUND monitor is gone on purpose — see spec §5 and the
  * SR5-08 note in services/networkExecutorSelection.ts. A monitor whose site has
  * no online agent now reports "No online agent available" rather than probing
  * from a different site.
  */
 async function selectExecutionAgentForMonitor(
-  monitor: { orgId: string; assetId: string | null },
+  monitor: { orgId: string; assetId: string | null; siteId?: string | null },
   permissions?: UserPermissions,
+  agentId?: string,
 ): Promise<string | null | 'SITE_ACCESS_DENIED'> {
-  const assetSiteId = await getMonitorSiteId(monitor);
-
-  if (permissions?.allowedSiteIds) {
-    if (assetSiteId && !canAccessSite(permissions, assetSiteId)) return 'SITE_ACCESS_DENIED';
-    if (!assetSiteId && permissions.allowedSiteIds.length === 0) return 'SITE_ACCESS_DENIED';
-  }
-
-  const pick = await selectNetworkExecutor({
-    orgId: monitor.orgId,
-    siteId: assetSiteId,
-    restrictToSiteIds: assetSiteId ? null : (permissions?.allowedSiteIds ?? null),
+  const pick = await selectMonitorExecutor(monitor, {
+    allowedSiteIds: permissions?.allowedSiteIds,
+    agentId,
   });
+  if ('error' in pick && pick.error === 'site_access_denied') return 'SITE_ACCESS_DENIED';
   return 'agentId' in pick ? pick.agentId : null;
 }
 
@@ -803,7 +800,18 @@ monitorRoutes.post(
       });
     }
 
-    const command = buildMonitorCommand(monitor);
+    // Re-read access and pin the selected executor: a move, revocation or
+    // disconnect during selection must not send a probe using stale scope.
+    const current = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
+    if ('error' in current) return c.json({ error: current.error }, current.status);
+    const eligible = await selectExecutionAgentForMonitor(current.monitor, c.get('permissions') as UserPermissions | undefined, agentId);
+    if (eligible === 'SITE_ACCESS_DENIED') return c.json({ error: 'Access to this site denied' }, 403);
+    if (current.monitor.orgId !== monitor.orgId || eligible !== agentId || !isAgentConnected(agentId)) {
+      return c.json({
+        data: { monitorId, status: 'failed', error: 'No online agent available', testedAt: new Date().toISOString() }
+      });
+    }
+    const command = buildMonitorCommand(current.monitor);
     const sent = sendCommandToAgent(agentId, command);
 
     writeRouteAudit(c, {

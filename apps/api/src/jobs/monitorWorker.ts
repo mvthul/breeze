@@ -7,8 +7,8 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
-import { networkMonitors, networkMonitorResults, devices, networkMonitorAlertRules, alerts, discoveredAssets, organizations } from '../db/schema';
-import { eq, and, sql, desc, inArray } from 'drizzle-orm';
+import { networkMonitors, networkMonitorResults, devices, networkMonitorAlertRules, alerts, organizations } from '../db/schema';
+import { eq, and, sql, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { isReusableState } from '../services/bullmqUtils';
@@ -26,7 +26,8 @@ import {
 import { attachWorkerObservability } from './workerObservability';
 import { redactOptionalSecretText, redactSecretsDeep } from '../services/secretRedaction';
 import { monitorRequestUrl, readTlsObservation, tlsObservationUpdate } from '../services/monitors/tlsObservation';
-import { loadAssetSiteId, selectNetworkExecutor } from '../services/networkExecutorSelection';
+import { selectMonitorExecutor } from '../services/networkExecutorSelection';
+import { resolveNetworkCheckAlertDevice } from '../services/monitors/networkCheckAlertDevice';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -194,7 +195,7 @@ async function jobOrgIsAuthorized(
  * Redis or the agent WebSocket, so the pooled connection is released before
  * the connectivity check and dispatch (#1105).
  */
-async function loadCheckMonitorInputs(data: CheckMonitorJobData): Promise<CheckMonitorInputs> {
+async function loadCheckMonitorInputs(data: CheckMonitorJobData, selectedAgentId?: string): Promise<CheckMonitorInputs> {
   const [monitor] = await db
     .select()
     .from(networkMonitors)
@@ -216,7 +217,7 @@ async function loadCheckMonitorInputs(data: CheckMonitorJobData): Promise<CheckM
   // The probe device comes from the RUNNING org (data.orgId), never from
   // monitor.orgId - which is NULL for a partner-wide check and would silently
   // match no device at all.
-  const agentId = await selectExecutionAgentForMonitor({ orgId: data.orgId, assetId: monitor.assetId });
+  const agentId = await selectExecutionAgentForMonitor({ orgId: data.orgId, assetId: monitor.assetId, siteId: monitor.siteId }, selectedAgentId);
   return { status: 'ok', monitor, agentId };
 }
 
@@ -242,7 +243,7 @@ export async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
       return { dispatched: false, agentId: null };
   }
 
-  const { monitor, agentId } = inputs;
+  const { agentId } = inputs;
 
   // Phase 2 — connectivity check and the agent WebSocket dispatch, both with
   // NO DB context open (#1105). dispatchCommandToAgent does Redis/WS I/O via
@@ -253,7 +254,13 @@ export async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
     return { dispatched: false, agentId: null };
   }
 
-  const command = buildMonitorCommand(monitor);
+  // Revalidate after connectivity I/O, in a fresh short DB context. Pin the
+  // previous executor so a changed scope cannot silently select a replacement.
+  const current = await runWithSystemDbAccess(() => loadCheckMonitorInputs(data, agentId));
+  if (current.status !== 'ok' || current.agentId !== agentId) {
+    return { dispatched: false, agentId: null };
+  }
+  const command = buildMonitorCommand(current.monitor);
   const outcome = await dispatchCommandToAgent(agentId, command, { priority: 'probe' });
 
   if (outcome.status !== 'sent') {
@@ -278,64 +285,11 @@ function parseNumericThreshold(threshold: string | null | undefined): number | n
  * manual probe (spec §5).
  */
 export async function selectExecutionAgentForMonitor(
-  monitor: { orgId: string; assetId: string | null },
+  monitor: { orgId: string; assetId: string | null; siteId?: string | null },
+  agentId?: string,
 ): Promise<string | null> {
-  const siteId = monitor.assetId ? await loadAssetSiteId(monitor.orgId, monitor.assetId) : null;
-  const pick = await selectNetworkExecutor({ orgId: monitor.orgId, siteId });
+  const pick = await selectMonitorExecutor(monitor, { agentId });
   return 'agentId' in pick ? pick.agentId : null;
-}
-
-async function resolveMonitorAlertDevice(
-  monitor: {
-    /** The RUNNING org (#5291 W04), not necessarily the definition's owner. */
-    orgId: string;
-    assetId: string | null;
-  }
-): Promise<string | null> {
-  let preferredSiteId: string | null = null;
-
-  if (monitor.assetId) {
-    const [asset] = await db
-      .select({
-        linkedDeviceId: discoveredAssets.linkedDeviceId,
-        siteId: discoveredAssets.siteId
-      })
-      .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, monitor.assetId), eq(discoveredAssets.orgId, monitor.orgId)))
-      .limit(1);
-
-    if (asset?.linkedDeviceId) {
-      return asset.linkedDeviceId;
-    }
-
-    preferredSiteId = asset?.siteId ?? null;
-  }
-
-  if (preferredSiteId) {
-    const [siteDevice] = await db
-      .select({ id: devices.id })
-      .from(devices)
-      .where(and(
-        eq(devices.orgId, monitor.orgId),
-        eq(devices.isEphemeral, false),
-        eq(devices.siteId, preferredSiteId)
-      ))
-      .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
-      .limit(1);
-
-    if (siteDevice?.id) {
-      return siteDevice.id;
-    }
-  }
-
-  const [orgDevice] = await db
-    .select({ id: devices.id })
-    .from(devices)
-    .where(and(eq(devices.orgId, monitor.orgId), eq(devices.isEphemeral, false)))
-    .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
-    .limit(1);
-
-  return orgDevice?.id ?? null;
 }
 
 function getMonitorAlertConditionState(
@@ -394,7 +348,9 @@ async function evaluateMonitorAlertRules(
 
   if (rules.length === 0) return;
 
-  const alertDeviceId = await resolveMonitorAlertDevice({ orgId: runningOrgId, assetId: monitor.assetId });
+  // #6353 — shared with the `network_check` monitor path, so a converted check
+  // keeps alerting on the same device it did as a legacy rule.
+  const alertDeviceId = await resolveNetworkCheckAlertDevice({ orgId: runningOrgId, assetId: monitor.assetId });
   if (!alertDeviceId) {
     console.warn(`[MonitorWorker] Skipping alert evaluation for monitor ${monitor.id}: no device context available`);
     return;
@@ -444,7 +400,7 @@ async function evaluateMonitorAlertRules(
     const alertId = await createSourcedAlert({
       deviceId: alertDeviceId,
       // Alert rows always take the DEVICE's org. `runningOrgId` IS that org:
-      // resolveMonitorAlertDevice only returns devices in it, and for a
+      // resolveNetworkCheckAlertDevice only returns devices in it, and for a
       // partner-wide monitor it is the org the job fanned out to, never the
       // (NULL) definition owner. #5291 W04.
       orgId: runningOrgId,
