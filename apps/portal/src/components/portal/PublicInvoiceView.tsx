@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { CreditCard, Download } from 'lucide-react';
 import { withBase } from '@/lib/basePath';
-import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail } from '@/lib/api';
+import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail, lineWorkedVsBilledNote } from '@/lib/api';
 import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
 import { money } from '@/lib/money';
@@ -301,6 +301,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
                       {group.lines.map((l) => {
                         const index = lines.indexOf(l);
                         const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
+                        const note = lineWorkedVsBilledNote(l);
                         const title = group.ticketNumber
                           ? (l.description || l.name || '—')
                           : ((l.name ?? l.description ?? '').trim() || '—');
@@ -312,6 +313,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
                             <td className="px-4 py-3 text-foreground sm:px-5">
                               {title}
                               {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
+                              {note && <div className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-line-worked-vs-billed-${index}`}>{note}</div>}
                             </td>
                             <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
                             <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>

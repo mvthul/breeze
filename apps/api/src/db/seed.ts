@@ -5,9 +5,21 @@ import { db, withSystemDbAccessContext } from './index';
 import { roles, permissions, rolePermissions, scripts, alertTemplates, partners, organizations, sites, users, partnerUsers } from './schema';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
+import { ensureDefaultProfile } from '../services/billingProfileService';
 import { cutScriptVersion } from '../services/scriptVersions';
 import { eq, and, isNull } from 'drizzle-orm';
 import { hashPassword } from '../services/password';
+
+/**
+ * Settings for the seeded dev/e2e "Default Partner". New partners default to
+ * `security.requireMfa = true` (spec
+ * docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md
+ * D2), but seeded admins sign in without a factor and e2e pins
+ * MFA_FORCE_FOR_PARTNER_ADMIN=false, so the seeded partner opts OUT explicitly.
+ * Pinned by db/seed.test.ts — do not "simplify" this back to the bare helper.
+ */
+export const DEV_SEED_DEFAULT_PARTNER_SETTINGS: Record<string, unknown> =
+  applyNewPartnerDefaultSettings({ security: { requireMfa: false } });
 
 const DEV_BOOTSTRAP_ADMIN_EMAIL = 'admin@breeze.local';
 const DEV_BOOTSTRAP_ADMIN_PASSWORD = 'BreezeAdmin123!';
@@ -158,6 +170,10 @@ export const DEFAULT_PERMISSIONS = [
   // time_entries:write, and an unseeded grant is dropped silently by seedRoles.
   { resource: 'time_entries', action: 'read', description: 'View time entries and timesheets' },
   { resource: 'time_entries', action: 'write', description: 'Log and edit time entries' },
+  { resource: 'time_entries', action: 'manage_billing', description: 'Override and reset time entry billing terms' },
+
+  { resource: 'billing_profiles', action: 'read', description: 'View work types and billing profiles (rate cards)' },
+  { resource: 'billing_profiles', action: 'write', description: 'Create and manage work types and billing profiles' },
 
   // Microsoft 365 partner-global ticket mailbox administration
   { resource: 'ticket_mailbox', action: 'read', description: 'View Microsoft 365 ticket mailbox connection status' },
@@ -237,6 +253,8 @@ export const DEFAULT_PERMISSIONS = [
   // AI session audit (SR5-09)
   { resource: 'ai_sessions', action: 'read_all',
     description: "View all users' AI session history (admin audit dashboard)" },
+  { resource: 'ai_sessions', action: 'use',
+    description: 'Open and drive your own AI chat sessions' },
 
   // AI agents (#3821)
   { resource: 'ai_agents', action: 'read',
@@ -322,11 +340,15 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       // (reassign org, edit any author's comment) stays an admin action.
       'tickets:read', 'tickets:write',
       'time_entries:read', 'time_entries:write',
+      // Technicians can see work types; rate-card writes are granted explicitly.
+      'billing_profiles:read',
       'ticket_mailbox:read',
       'reports:read', 'reports:write',
       'sites:read',
       'topology:read',
       'organizations:read',
+      // AI chat (#6396): same reasoning as Org Technician.
+      'ai_sessions:use',
       // Tier 1 (read-only) external tools only (#5216).
       'external_tools:use',
       // Org document library (service deliverables W03).
@@ -395,6 +417,8 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'audit:manage',
       'vulnerabilities:accept_risk',
       'ai_sessions:read_all',
+      // Own-session chat (#6396): dedicated capability, not organizations:write.
+      'ai_sessions:use',
       // An org admin may tighten their own org's agent policy. Creating a
       // PARTNER-WIDE baseline additionally requires partner scope with
       // org_access='all' (canManagePartnerWidePolicies), so this grant cannot
@@ -445,6 +469,9 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       'sites:read',
       'topology:read', 'topology:write',
       'remote:access',
+      // AI chat (#6396): a technician can run scripts and manage devices over
+      // HTTP; the per-tool map bounds chat to exactly the same permissions.
+      'ai_sessions:use',
       // Read-only: a technician writing a script needs to know which variable
       // keys exist, but not to create or rotate them.
       'variables:read',
@@ -1264,9 +1291,12 @@ export async function seedDefaultAdmin() {
           plan: 'enterprise',
           // #4520: keep the seeded dev partner on the same inbound opt-out
           // default real partners get, so local behaviour matches production.
-          settings: applyNewPartnerDefaultSettings()
+          // Spec 2026-09-18 D2: but NOT the requireMfa default — see the
+          // constant's doc comment.
+          settings: DEV_SEED_DEFAULT_PARTNER_SETTINGS
         })
         .returning();
+      await ensureDefaultProfile(newPartner!.id, newPartner!.currencyCode, tx);
       await seedSystemTicketStatuses(tx, newPartner!.id);
       return newPartner!.id;
     });
@@ -1308,6 +1338,7 @@ export async function seedDefaultAdmin() {
         status: 'active'
       })
       .returning();
+    await ensureDefaultProfile(partnerId, partnerRow.currencyCode, db);
     orgId = newOrg!.id;
     console.log('  Created default organization.');
   }
@@ -1366,6 +1397,11 @@ export async function seedDefaultAdmin() {
       name: admin.name,
       passwordHash,
       status: 'active',
+      // Dev/E2E seed only: pre-verify the bootstrap admin's email so dev/E2E
+      // flows that require a verified recipient (e.g. sending-domain test
+      // sends) aren't blocked on a manual verification step for a seeded
+      // account. Production signup paths are untouched.
+      emailVerifiedAt: new Date(),
       preferences: { bootstrapSetupRequired: true },
     })
     .returning();

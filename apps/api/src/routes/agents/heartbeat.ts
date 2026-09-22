@@ -1,3 +1,4 @@
+import { topologyHeartbeat } from '../../services/topology/heartbeat';
 import { Hono } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
 import { bodyLimit } from 'hono/body-limit';
@@ -1350,7 +1351,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   if (data.metrics) {
     try {
       const thresholdScan = await maybeQueueThresholdFilesystemAnalysis(
-        { id: device.id, osType: device.osType },
+        { id: device.id, osType: device.osType, orgId: device.orgId },
         data.metrics.diskPercent
       );
       if (thresholdScan.queued) {
@@ -1785,7 +1786,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
+  // #3997 — do not ASK for a rotation the mint route will now refuse.
+  // `rotate-token` is off the tenant drain surface (agentAuth's
+  // TENANT_DRAIN_ALLOWED_ACTIONS) and the route itself fails closed on a
+  // drain, so signalling it here would have every agent in an offboarding
+  // tenant attempt a mint it cannot complete on EVERY heartbeat for the whole
+  // window (OFFBOARDING_DRAIN_WINDOW_HOURS, 72h by default), logging a rotation
+  // failure each time. Suppressing the signal changes nothing about safety —
+  // `handleTokenRotation` in agent/internal/heartbeat logs and returns, never
+  // gating the heartbeat or touching on-disk credentials — it only stops a
+  // guaranteed-useless round trip and its error noise.
+  //
+  // Only the TENANT drain is checked: `deviceUninstallDraining` returns from
+  // the minimal drain beat at the top of this handler and never reaches here,
+  // so testing it too would be unreachable code.
   const rotateToken =
+    !agent?.tenantDraining &&
     !authenticatedWithPreviousToken &&
     !pendingRotationLive &&
     (!device.watchdogTokenHash || isAgentTokenRotationDue(device.tokenIssuedAt));
@@ -1813,6 +1829,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     ),
   });
 
+  let networkContextReceipt;
+  try {
+    const topology = await db.transaction(() => topologyHeartbeat(device, data));
+    mergedConfigUpdate.networkContext = topology.config;
+    networkContextReceipt = topology.receipt;
+  } catch (error) {
+    console.error('[heartbeat] Topology collection failed:', error);
+    captureException(error);
+    networkContextReceipt = data.networkContextV1 === undefined ? undefined : { accepted: false, reason: 'collection_unavailable', sourceReceipts: [] };
+  }
+
   // Main-branch response payload — built inside the org context, but the
   // manifest-trust-keyset and policy probe config are fetched AFTER this
   // context closes (see below).
@@ -1822,6 +1849,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     mainResponse: {
       commands: deliverableCommands,
       configUpdate: mergedConfigUpdate,
+      networkContextReceipt,
       upgradeTo,
       helperUpgradeTo: helperUpgradeTo ?? undefined,
       watchdogUpgradeTo: watchdogUpgradeTo ?? undefined,

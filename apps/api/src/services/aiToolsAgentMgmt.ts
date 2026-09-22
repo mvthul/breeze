@@ -14,7 +14,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { getOrgAgentUpdateConfig, resolvePinnedUpgradeTarget, normalizeAgentArchitecture } from '../routes/agents/helpers';
 import { getBinaryEdition } from './binaryEdition';
-import { deviceScopeCondition } from './aiToolsSiteScope';
+import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -54,9 +54,11 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'agent versions: list releases and check devices for available upgrades',
     definition: {
       name: 'query_agent_versions',
-      description: 'List available agent versions and check which devices need upgrades.',
+      description: 'List available agent versions and check which devices need upgrades. Actions: list_versions, check_upgrades.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -154,6 +156,26 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         // site axis — a device-less analysis run has no `allowedSiteIds` at all.
         const deviceCond = deviceScopeCondition(auth, devices.id);
         if (deviceCond) conditions.push(deviceCond);
+        // Site axis (audit §1.1). A site-restricted HUMAN never carries
+        // `allowedDeviceIds`, so the branch above is a no-op for them and this
+        // rollup stayed org-wide. `resolveSiteAllowedDeviceIds` intersects both
+        // axes; an unrestricted caller reaches neither branch and pays no scan.
+        if (auth.allowedSiteIds !== undefined) {
+          const siteDeviceIds = auth.orgId
+            ? await resolveSiteAllowedDeviceIds(auth.orgId, auth) ?? []
+            : [];
+          if (siteDeviceIds.length === 0) {
+            return JSON.stringify({
+              latestVersion: latest?.version ?? null,
+              effectiveTarget,
+              pinned,
+              totalOutdated: 0,
+              byVersion: [],
+              note: SITE_SCOPE_EMPTY_NOTE,
+            });
+          }
+          conditions.push(inArray(devices.id, siteDeviceIds));
+        }
 
         const outdated = await db
           .select({
@@ -176,6 +198,11 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
           totalOutdated,
           byVersion: outdated,
           ...(note ? { note } : {}),
+          // The rollup is narrowed but reads as a fleet-wide rollout figure;
+          // say what it actually covers (review #6110).
+          ...(auth.allowedSiteIds !== undefined || auth.allowedDeviceIds !== undefined
+            ? { scopeNote: 'These counts cover only the devices within your access scope, not every device in the organization.' }
+            : {}),
         });
       }
 
@@ -189,6 +216,8 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'agent software upgrades: queue a target version for devices',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'trigger_agent_upgrade',
@@ -439,11 +468,13 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 3 as AiToolTier,
+    domain: 'admin',
+    searchHint: 'silent or unresponsive agent recovery: request a restart through the watchdog',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'trigger_agent_restart',
       description:
-        'Ask the breeze-watchdog to restart the main agent on a device — recovers a wedged or silent agent (the "Agent silent · watchdog OK" state). Targets the watchdog, not the agent, so it works even when the agent itself is unresponsive. The watchdog acts on this when it is supervising/failing over the agent; a healthy agent is left untouched.',
+        "Request a watchdog restart of a silent or wedged agent, even when the agent is unresponsive. The watchdog acts only when supervising/failing over the agent; healthy agents remain untouched.",
       input_schema: {
         type: 'object' as const,
         properties: {

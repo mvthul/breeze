@@ -113,7 +113,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { Hono } from 'hono';
-import { authMiddleware, requireScope, requirePermission, requireMfa, requireOrg, requirePartner, requireOrgAccess, requireSiteAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext } from './auth';
+import { authMiddleware, requireScope, requirePermission, requireMfa, requireInteractiveSession, requireOrg, requirePartner, requireOrgAccess, requireSiteAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext, hasSatisfiedMfa } from './auth';
 import { verifyToken } from '../services/jwt';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
@@ -332,6 +332,42 @@ describe('authMiddleware', () => {
     );
   });
 
+  it('checks the IP allowlist before entering the request database context', async () => {
+    let requestContextActive = false;
+    let handlerSawRequestContext = false;
+    const app = new Hono();
+    app.use(authMiddleware);
+    app.get('/test', (c) => {
+      handlerSawRequestContext = requestContextActive;
+      return c.json({ ok: true });
+    });
+
+    vi.mocked(verifyToken).mockResolvedValue(basePayload);
+    mockUserSelect([activeUser]);
+    vi.mocked(withDbAccessContext).mockImplementationOnce(async (_context, fn) => {
+      requestContextActive = true;
+      try {
+        return await fn();
+      } finally {
+        requestContextActive = false;
+      }
+    });
+    ipGuardMocks.ipAllowlistGuard.mockImplementationOnce(async (_c, next) => {
+      expect(requestContextActive).toBe(false);
+      await next();
+    });
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(handlerSawRequestContext).toBe(true);
+    expect(ipGuardMocks.ipAllowlistGuard.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(withDbAccessContext).mock.invocationCallOrder[0]!,
+    );
+  });
+
   it('rejects a blocked signed mobile binding on an ordinary authenticated API path', async () => {
     const app = buildAuthApp();
     const boundPayload = { ...basePayload, mdid: 'blocked-installation-id' };
@@ -375,6 +411,30 @@ describe('authMiddleware', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.code).toBe('ip_not_allowed');
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  it('keeps self-managed handlers outside the request database context', async () => {
+    let handlerCalled = false;
+    const app = new Hono();
+    app.use(authMiddleware);
+    app.post('/api/v1/invoices/:id/pay-link', (c) => {
+      handlerCalled = true;
+      return c.json({ ok: true });
+    });
+
+    vi.mocked(verifyToken).mockResolvedValue(basePayload);
+    mockUserSelect([activeUser]);
+
+    const res = await app.request('/api/v1/invoices/invoice-1/pay-link', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(handlerCalled).toBe(true);
+    expect(ipGuardMocks.ipAllowlistGuard).toHaveBeenCalledOnce();
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
   it('uses the live owning partner for an organization token whose authorization partnerId is null', async () => {
@@ -1202,6 +1262,64 @@ describe('requireMfa', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true });
+  });
+
+  // Contract: the `mfa` claim means "this session satisfies the EFFECTIVE MFA
+  // policy" (login/SSO/CF-Access mint it from getEffectiveMfaPolicy). It is
+  // NOT proof that a factor was presented — a tenant that does not require
+  // MFA admits password-only sessions here by design. Anything that needs a
+  // proven fresh factor uses the step-up grant primitive instead
+  // (services/mfaStepUpGrant.ts). These pin the gate's only input.
+  it('rejects when the auth context carries no token at all (claim absent ≠ satisfied)', async () => {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', { ...baseAuth, token: undefined });
+      await next();
+    });
+    app.use(requireMfa());
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    const res = await app.request('/test');
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+  });
+
+  it('hasSatisfiedMfa reads only the mfa claim: true only for mfa === true', () => {
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: true } } as any)).toBe(true);
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: false } } as any)).toBe(false);
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: undefined } } as any)).toBe(false);
+    expect(hasSatisfiedMfa({ token: { ...basePayload, mfa: 'true' } } as any)).toBe(false);
+    expect(hasSatisfiedMfa({ token: undefined } as any)).toBe(false);
+  });
+});
+
+describe('requireInteractiveSession', () => {
+  function appWith(auth: unknown) {
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      if (auth !== undefined) c.set('auth', auth);
+      await next();
+    });
+    app.use(requireInteractiveSession());
+    app.get('/test', (c) => c.json({ ok: true }));
+    return app;
+  }
+
+  it('admits a user_session principal', async () => {
+    const res = await appWith({ ...baseAuth, principal: { kind: 'user_session' } }).request('/test');
+    expect(res.status).toBe(200);
+  });
+
+  it.each(['api_key', 'oauth_grant', 'ai_agent', 'system', 'unknown'])('denies a %s principal with a written 403', async (kind) => {
+    const res = await appWith({ ...baseAuth, principal: { kind } }).request('/test');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Interactive user session required' });
+  });
+
+  it('denies when there is no auth context at all', async () => {
+    const res = await appWith(undefined).request('/test');
+    expect(res.status).toBe(403);
   });
 });
 

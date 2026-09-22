@@ -135,6 +135,7 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       unitPrice: invoiceLines.unitPrice,
       taxable: invoiceLines.taxable,
       lineTotal: invoiceLines.lineTotal,
+      workedMinutes: invoiceLines.workedMinutes,
     }).from(invoiceLines)
       .leftJoin(tickets, eq(invoiceLines.ticketId, tickets.id))
       .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))

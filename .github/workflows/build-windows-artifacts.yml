@@ -8,18 +8,22 @@ on:
         required: true
         default: 'main'
 
+permissions:
+  contents: read
+
 jobs:
   build-agent-windows:
     name: Build Breeze Agent (Windows)
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.inputs.ref }}
+          persist-credentials: false
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.26.6'
           cache: false
@@ -38,13 +42,13 @@ jobs:
             --out ../breeze-user-helper-windows-amd64.exe
 
       - name: Upload Agent
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: breeze-agent-windows
           path: breeze-agent-windows-amd64.exe
 
       - name: Upload User Helper
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: breeze-user-helper-windows
           path: breeze-user-helper-windows-amd64.exe
@@ -54,23 +58,24 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.inputs.ref }}
+          persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: '10.34.5'
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -84,13 +89,13 @@ jobs:
           pnpm tauri build --target x86_64-pc-windows-msvc --config tauri-test-config.json
 
       - name: Upload Helper MSI
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: breeze-helper-windows-msi
           path: apps/helper/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
 
       - name: Upload Helper EXE
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: breeze-helper-windows-exe
           path: apps/helper/src-tauri/target/x86_64-pc-windows-msvc/release/breeze-helper.exe
@@ -100,23 +105,24 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.inputs.ref }}
+          persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: '10.34.5'
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -130,13 +136,13 @@ jobs:
           pnpm tauri build --target x86_64-pc-windows-msvc --config tauri-test-config.json
 
       - name: Upload Viewer MSI
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: breeze-viewer-windows-msi
           path: apps/viewer/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
 
       - name: Upload Viewer EXE
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: breeze-viewer-windows-exe
           path: apps/viewer/src-tauri/target/x86_64-pc-windows-msvc/release/breeze-viewer.exe

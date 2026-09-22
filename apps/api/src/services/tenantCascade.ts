@@ -50,6 +50,7 @@ import { pgErrorCode } from '../utils/pgErrors';
 import { deleteObjectKeys } from './ticketAttachmentStorage';
 import { getBlobStorage } from './artifacts/blobStorage';
 import { deleteObjects } from './s3Storage';
+import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 
 type StorageKeyRow = { storageKey: string | null };
 type CountRow = { count: number | string };
@@ -304,7 +305,22 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   //     here exactly as it is for the two entries above. Stated only so a
   //     reader knows the RESTRICT edge exists and is load-bearing somewhere.
   'ai_operator_operations',
+  // Recipe Library wave E2 (#6167). All four are Shape 1 with a NOT NULL
+  // org_id, so all four are required here. localeCompare puts '_' ahead of
+  // letters, which is why …_task_target_accounts precedes …_task_targets and
+  // both precede …_tasks. topologicalCascadeOrder()'s runtime pg_constraint
+  // read is what actually orders the DELETEs (children first); the
+  // alphabetical position here is what tenantCascade.test.ts asserts.
+  //
+  // ai_operator_task_events is APPEND-ONLY (REVOKE DELETE from breeze_app plus
+  // an immutability trigger), so it is ALSO in AUDIT_ADMIN_REQUIRED_TABLES
+  // below. Membership here without membership there is a runtime
+  // `permission denied` in the middle of a GDPR erasure.
+  'ai_operator_task_events',
   'ai_operator_task_outbox',
+  'ai_operator_task_steps',
+  'ai_operator_task_target_accounts',
+  'ai_operator_task_targets',
   'ai_operator_tasks',
   // Execution plane W01 (spec §6.1): artifact rows. Child of ai_agent_runs via
   // the composite (run_id, org_id) FK, ON DELETE CASCADE — topologicalCascadeOrder()
@@ -361,6 +377,17 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'backup_jobs',
   'backup_policies',
   'backup_profiles',
+  // Backup Provider Integration W01 (#6008). Three org_id tables; the fourth
+  // (backup_provider_connections) is partner-axis with no org_id and is erased
+  // by cascadeDeletePartner's information_schema partner_id sweep instead.
+  // Alphabetical by localeCompare puts device_history before devices ('_' <
+  // 's'), which also happens to be children-before-parents — but the real
+  // DELETE order comes from topologicalCascadeOrder()'s live pg_constraint
+  // read, and every FK among these three carries an explicit ON DELETE
+  // CASCADE, so position here is determinism, not correctness.
+  'backup_provider_customers',
+  'backup_provider_device_history',
+  'backup_provider_devices',
   'backup_sla_configs',
   'backup_sla_events',
   'backup_snapshot_retirements',
@@ -558,6 +585,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // rule / automation rows and to every config_policy_monitors attachment, all
   // of which are listed earlier or reached by FK, so alphabetical order is also
   // a safe delete order here (asserted by tenantCascade.integration.test.ts).
+  // W05c1 conversion ledger. outputs → conversions (ON DELETE CASCADE) and
+  // conversions.policy_id → configuration_policies (SET NULL), outputs.monitor_id
+  // → monitor_definitions (SET NULL): alphabetical order is also child-before-
+  // parent here.
+  'monitor_conversion_outputs',
+  'monitor_conversions',
   'monitor_definitions',
   // #5290 — device-scoped operational rows. Both FK to monitor_definitions with
   // ON DELETE CASCADE, and monitor_device_state.current_episode_id FKs to
@@ -581,6 +614,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'oauth_grants',
   'oauth_refresh_tokens',
   'onedrive_device_state',
+  'org_billing_profile_assignments',
   // org_documents (service deliverables W03). Alphabetical slot only: the list
   // is STATIC and alphabetised (the contract test asserts exactly that), while
   // the real delete order comes from topologicalCascadeOrder(), which reads FK
@@ -796,8 +830,29 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // the alphabetical and FK-order properties do not fight here.
   'tool_source_tools',
   'tool_sources',
+  'topology_change_outbox',
+  'topology_collection_runs',
+  'topology_collection_sources',
+  'topology_config_template_versions',
+  'topology_config_templates',
+  'topology_diagnostic_runs',
+  'topology_diagnostic_steps',
+  'topology_interfaces',
   'topology_layout',
+  'topology_layouts',
   'topology_manual_nodes',
+  'topology_monitor_bindings',
+  'topology_monitoring_policies',
+  'topology_node_bindings',
+  'topology_node_positions',
+  'topology_nodes',
+  'topology_observations',
+  'topology_policy_targets',
+  'topology_probe_targets',
+  'topology_relationship_support',
+  'topology_relationships',
+  'topology_site_state',
+  'topology_site_template_bindings',
   'tunnel_allowlists',
   'tunnel_sessions',
   'unifi_clients',
@@ -1093,6 +1148,11 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   // immutability trigger (2026-10-16-100100), so erasure has to run as
   // breeze_audit_admin with breeze.allow_audit_retention=1.
   'script_proposal_reviews',
+  // Append-only AI Operator task timeline: REVOKE UPDATE/DELETE from
+  // breeze_app plus ai_operator_task_events_append_only()
+  // (2026-10-26-160000), so erasure has to run as breeze_audit_admin with
+  // breeze.allow_audit_retention=1.
+  'ai_operator_task_events',
 ]);
 
 interface FkEdge {
@@ -1607,6 +1667,19 @@ export async function cascadeDeletePartner(
     details: { partnerId, startedAt },
     result: 'success',
   });
+
+  // Release provider-side sending domains BEFORE any delete (spec §3.5).
+  // partner_sending_domains carries a BEFORE DELETE guard that raises while the
+  // row still owns a provider_domain_id, so the partner-axis sweep below would
+  // abort the purge without this. It writes an email_provider_domain_releases
+  // row for every provider_managed domain — that table has no partner_id, so it
+  // survives the sweep and the worker drains it afterwards — and never one for
+  // a domain Breeze did not create. No provider call is made here.
+  //
+  // It runs after the forensic breadcrumb above on purpose: the purge_started
+  // audit must exist even if this step throws. It opens its own system context,
+  // like every other statement in this function (see the nesting warning below).
+  await releaseSendingDomainsForPartner(partnerId);
 
   // Lookup child orgs under system context — organizations has partner-axis RLS;
   // bare breeze_app would silently return 0 rows.

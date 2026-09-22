@@ -142,7 +142,12 @@ const namespaceDuplicateBaselines = {
     // +2 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.status
     // ("Sandbox") and .script ("Script") — both are the standard loanwords in
     // pt-BR, and translating them would read as invented jargon.
-    'settings.json': 126,
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in pt-BR.
+    'settings.json': 129,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -151,6 +156,8 @@ const namespaceDuplicateBaselines = {
     // Tool catalog W01 PR C (#5216): one reviewed cognate per locale — see the
     // per-locale note where it is not obvious.
     'toolSources.json': 1,
+    // Topology (#5997): 'Site' is the identical pt-BR cognate.
+    'topology.json': 1,
     'vulnerabilities.json': 13,
   },
   'es-419': {
@@ -272,13 +279,19 @@ const namespaceDuplicateBaselines = {
     // +1 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.script
     // — "Script" is the standard loanword in es-419. (`status` is translated
     // here as "Entorno aislado" and is NOT a duplicate.)
-    'settings.json': 128,
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in es-419.
+    'settings.json': 131,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
     'toolSources.json': 1,
+    'topology.json': 0,
     'vulnerabilities.json': 16,
   },
   'fr-FR': {
@@ -424,13 +437,23 @@ const namespaceDuplicateBaselines = {
     // French.
     // +1: aiAgentsPage.runs.detail.workspace.script (#5716 execution plane W05) —
     // "Script" is the loanword in French (same acceptance as scriptRejected).
-    'settings.json': 174,
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    // +1 W01 settings consolidation (#6224): partnerSettingsPage.tabs.modules.label
+    // — "Modules" spells identically in French.
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in French.
+    'settings.json': 178,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 23,
     'toolSources.json': 1,
+    // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
+    // targetFields.port 'Port' are identical fr-FR cognates.
+    'topology.json': 4,
     'vulnerabilities.json': 15,
   },
   'fr-CA': {
@@ -572,13 +595,23 @@ const namespaceDuplicateBaselines = {
     // Canadian French.
     // +1: aiAgentsPage.runs.detail.workspace.script (#5716 execution plane W05) —
     // "Script" is the loanword in Canadian French too.
-    'settings.json': 180,
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    // +1 W01 settings consolidation (#6224): partnerSettingsPage.tabs.modules.label
+    // — "Modules" spells identically in Canadian French too.
+    // +1: emailTemplates.variables.total — "Total" is spelled identically in Canadian French.
+    'settings.json': 184,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 22,
     'toolSources.json': 1,
+    // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
+    // targetFields.port 'Port' are identical fr-CA cognates.
+    'topology.json': 4,
     'vulnerabilities.json': 15,
   },
   'de-DE': {
@@ -638,7 +671,9 @@ const namespaceDuplicateBaselines = {
     // +1: runContext.system (#4888) — "System" is the German word too, and it
     // labels a privilege level, so the one place it must NOT be creatively
     // rendered is a control that says which account a script runs under.
-    'common.json': 107, // +1 W06: lists.separator ", " is punctuation
+    // +1 W01 settings consolidation (#6224): nav.ticketing — "Ticketing" is
+    // the standard de-DE loanword (matching partnerSettingsPage.tabs.ticketing).
+    'common.json': 108, // +1 W06: lists.separator ", " is punctuation
     // +8 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
@@ -716,13 +751,20 @@ const namespaceDuplicateBaselines = {
     // ("Region" is the same word in German) and .status ("Sandbox", the
     // standard loanword). `exitCode` is deliberately "Exit" rather than the
     // English "exit", so it is not among these.
-    'settings.json': 189,
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    'settings.json': 191,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
     'toolSources.json': 1,
+    // Topology (#5997): 'Name', 'Revision' and targetFields.hostname/port
+    // ('Hostname'/'Port') are identical de-DE cognates.
+    'topology.json': 4,
     'vulnerabilities.json': 20,
   },
   'it-IT': {
@@ -819,13 +861,21 @@ const namespaceDuplicateBaselines = {
     // +3 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.status
     // ("Sandbox"), .script ("Script") and .stdout ("Output") — all three are
     // the standard loanwords in it-IT.
-    'settings.json': 168,
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    // +1 W01 settings consolidation (#6224): ticketingSettingsTabs.email —
+    // "Email" is the standard loanword in it-IT technical UI (same word is
+    // already used for inboundEmail elsewhere in this file).
+    'settings.json': 171,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 8,
     'toolSources.json': 1,
+    'topology.json': 0,
     'vulnerabilities.json': 17,
   },
   'tr-TR': {
@@ -908,11 +958,17 @@ const namespaceDuplicateBaselines = {
     // locale-invariant (the acronym is never translated).
     // +1 W05 (#5612): scriptAuthoringPage.class.disk — "Disk" is spelled
     // identically in tr-TR.
-    'settings.json': 70,
+    // +2 (partner sending domains W05): `addPlaceholder` and
+    // `identityDisplayNamePlaceholder` are sample values — a domain example and
+    // a sample display name. Localising them would change the protected-literal
+    // occurrence count that localeParity.test.ts:513 pins against English.
+    'settings.json': 72,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,
     'toolSources.json': 1,
+    // Topology (#5997): 'Site' is the identical tr-TR cognate.
+    'topology.json': 1,
     'vulnerabilities.json': 11,
   },
 } satisfies Record<TranslatedLocale, Record<string, number>>;

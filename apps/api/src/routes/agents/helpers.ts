@@ -45,6 +45,8 @@ import {
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { parseCisCollectorOutput } from '../../services/cisHardening';
 import {
+  claimFilesystemScanGeneration,
+  setFilesystemScanGeneration,
   getFilesystemScanState,
   mergeFilesystemAnalysisPayload,
   parseFilesystemAnalysisStdout,
@@ -54,7 +56,11 @@ import {
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
-import { resolvePatchConfigForDevice } from '../../services/featureConfigResolver';
+import {
+  resolvePatchConfigForDevice,
+  buildRoleOsFilterConditions,
+  matchesRoleOsFilter,
+} from '../../services/featureConfigResolver';
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
 import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
 import { policyOwnershipCondition } from '../../services/configPolicyOwnership';
@@ -74,6 +80,8 @@ import {
   type AgentUpdateSettings,
 } from './agentUpdatePolicy';
 import {
+  normalizeScanPath,
+  osRootScanPath,
   isAlwaysMaintenanceWindow,
   parseMaintenanceWindow,
   resolveInheritedAgentVersionPins,
@@ -1510,13 +1518,17 @@ export async function handleCisCommandResult(
 // Filesystem Analysis
 // ============================================
 
+/**
+ * The volume a threshold-triggered scan targets: the device's OS root, in the
+ * same normalised form every other producer uses, so the result handler keys
+ * its snapshot on the key a `GET /filesystem` with no `?path=` reads back.
+ */
 export function getFilesystemThresholdScanPath(osType: unknown): string {
-  if (osType === 'windows') return 'C:\\';
-  return '/';
+  return osRootScanPath(osType);
 }
 
 export async function maybeQueueThresholdFilesystemAnalysis(
-  device: Pick<typeof devices.$inferSelect, 'id' | 'osType'>,
+  device: Pick<typeof devices.$inferSelect, 'id' | 'osType' | 'orgId'>,
   diskPercent: number
 ): Promise<{ queued: boolean; path?: string; thresholdPercent?: number }> {
   if (!Number.isFinite(diskPercent) || diskPercent < filesystemDiskThresholdPercent) {
@@ -1558,7 +1570,7 @@ export async function maybeQueueThresholdFilesystemAnalysis(
   }
 
   const path = getFilesystemThresholdScanPath(device.osType);
-  await db.insert(deviceCommands).values({
+  const [thresholdCommand] = await db.insert(deviceCommands).values({
     deviceId: device.id,
     type: filesystemAnalysisCommandType,
     payload: {
@@ -1577,7 +1589,11 @@ export async function maybeQueueThresholdFilesystemAnalysis(
       followSymlinks: false,
     },
     status: 'pending',
-  });
+  }).returning({ id: deviceCommands.id });
+
+  if (thresholdCommand) {
+    await setFilesystemScanGeneration(device.id, device.orgId, path, thresholdCommand.id);
+  }
 
   return {
     queued: true,
@@ -1602,6 +1618,7 @@ export async function handleFilesystemAnalysisCommandResult(
 
   const parsed = parseFilesystemAnalysisStdout(resultData.stdout ?? '');
   if (Object.keys(parsed).length === 0) {
+    captureException(new Error(`filesystem_analysis command ${command.id} dropped: unparseable stdout`));
     // A completed scan whose stdout is empty or non-JSON produces no snapshot,
     // which surfaces to the user as an empty Disk Cleanup tab with no error.
     console.warn(
@@ -1611,68 +1628,115 @@ export async function handleFilesystemAnalysisCommandResult(
   }
 
   // orgId comes from the caller's agent-auth context, which already resolved
-  // the device's org — no need to re-query devices here.
+  // the device's org — no need to re-query it here. The OS, however, is not in
+  // that context (AgentAuthContext carries no OS), and the scan-path key is
+  // OS-dependent: guessing POSIX would key every Windows device on '/' and
+  // recreate the very defect this wave closes. One indexed primary-key lookup.
+  const [deviceRow] = await db
+    .select({ osType: devices.osType })
+    .from(devices)
+    .where(eq(devices.id, command.deviceId))
+    .limit(1);
 
-  // The scan-state read and the disk-usage read are independent; run them
-  // together. The disk figure is only consumed by the scan-state upsert below.
-  const [currentState, diskRows] = await Promise.all([
-    getFilesystemScanState(command.deviceId),
-    db
-      .select({ usedPercent: deviceDisks.usedPercent })
-      .from(deviceDisks)
-      .where(eq(deviceDisks.deviceId, command.deviceId))
-      .limit(1),
-  ]);
-  const currentDiskUsedPercent =
-    typeof diskRows[0]?.usedPercent === 'number' ? diskRows[0].usedPercent : null;
+  if (!deviceRow) {
+    captureException(new Error(`filesystem_analysis command ${command.id} dropped: unknown device`));
+    console.warn(
+      `[agents/helpers] filesystem_analysis command ${command.id} has no devices row for ${command.deviceId}; no snapshot written`
+    );
+    return;
+  }
 
-  const existingAggregate = isObject(currentState?.aggregate) ? currentState.aggregate : {};
-  const mergedPayload = scanMode === 'baseline'
-    ? mergeFilesystemAnalysisPayload(existingAggregate, parsed)
-    : parsed;
-  const pendingDirs = readCheckpointPendingDirectories(mergedPayload.checkpoint, 50_000);
-  const hasCheckpoint = scanMode === 'baseline' && pendingDirs.length > 0;
-  const snapshotPayload = hasCheckpoint
-    ? {
-      ...mergedPayload,
-      partial: true,
-      reason: `checkpoint pending ${pendingDirs.length} directories`,
-      checkpoint: { pendingDirs },
-      scanMode,
+  const osType = deviceRow.osType;
+  // Every producer (the scan route, the AI tool, the threshold queue) already
+  // sends the normalised form; normalising again is what makes an in-flight
+  // command queued by the PREVIOUS release land on the right key too.
+  const scanPath = normalizeScanPath(osType, asString(payload.path) ?? osRootScanPath(osType));
+
+  // A savepoint inside the request context rolls back the receipt along with
+  // both writes, even when the caller catches a post-processing failure.
+  const persisted = await db.transaction(async (tx) => {
+    const claim = await claimFilesystemScanGeneration(command.deviceId, scanPath, command.id, tx, orgId);
+    if (claim === 'superseded' || claim === 'already_applied') {
+      captureException(new Error(`filesystem_analysis command ${command.id} dropped: ${claim}`));
+      return null;
     }
-    : {
-      ...mergedPayload,
-      scanMode,
-    };
 
-  await saveFilesystemSnapshot(command.deviceId, orgId, snapshotTrigger, snapshotPayload);
+    // The scan-state read and the disk-usage read are independent; run them
+    // together. The disk figure is only consumed by the scan-state upsert below.
+    const [currentState, diskRows] = await Promise.all([
+      getFilesystemScanState(command.deviceId, scanPath, tx),
+      tx
+        .select({
+          mountPoint: deviceDisks.mountPoint,
+          usedPercent: deviceDisks.usedPercent,
+        })
+        .from(deviceDisks)
+        .where(eq(deviceDisks.deviceId, command.deviceId))
+        .limit(64),
+    ]);
 
-  const hotFromRun = extractHotDirectoriesFromSnapshotPayload(snapshotPayload, 24);
-  const mergedHotDirectories = Array.from(
-    new Set([
-      ...hotFromRun,
-      ...readHotDirectories(currentState?.hotDirectories, 24),
-    ])
-  ).slice(0, 24);
+    // Defect 8: match the SCANNED volume's own disk row. The old code took
+    // `LIMIT 1` — an arbitrary row — so a `D:\` scan recorded `C:`'s 80% as D's
+    // baseline and every later `D:\` scan read a huge delta and forced a full
+    // rescan. No match means no figure, which means the next scan takes a
+    // baseline rather than comparing against an unrelated disk.
+    const matchedDisk = diskRows.find(
+      (disk) => normalizeScanPath(osType, disk.mountPoint) === scanPath
+    );
+    const currentDiskUsedPercent =
+      typeof matchedDisk?.usedPercent === 'number' ? matchedDisk.usedPercent : null;
 
-  // Baseline completion is defined solely by having no pending checkpoint
-  // directories left to resume. The snapshot's `partial` flag must NOT gate
-  // this: `partial` is also set (and stays sticky across merges) for routine
-  // max-depth truncation, which is not a resumable condition — folding it in
-  // here left `lastBaselineCompletedAt` permanently null on any deep tree, which
-  // forced every subsequent scan back to a full baseline and defeated the
-  // incremental hot-directory path.
-  const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0;
-  await upsertFilesystemScanState(command.deviceId, orgId, {
-    lastRunMode: scanMode,
-    lastBaselineCompletedAt: baselineCompleted
-      ? new Date()
-      : currentState?.lastBaselineCompletedAt ?? null,
-    lastDiskUsedPercent: currentDiskUsedPercent ?? currentState?.lastDiskUsedPercent ?? null,
-    checkpoint: hasCheckpoint ? { pendingDirs } : {},
-    aggregate: scanMode === 'baseline' && !baselineCompleted ? mergedPayload : {},
-    hotDirectories: mergedHotDirectories,
+    const existingAggregate = isObject(currentState?.aggregate) ? currentState.aggregate : {};
+    const mergedPayload = scanMode === 'baseline'
+      ? mergeFilesystemAnalysisPayload(existingAggregate, parsed)
+      : parsed;
+    const pendingDirs = readCheckpointPendingDirectories(mergedPayload.checkpoint, 50_000);
+    const hasCheckpoint = scanMode === 'baseline' && pendingDirs.length > 0;
+    const snapshotPayload = hasCheckpoint
+      ? {
+        ...mergedPayload,
+        partial: true,
+        reason: `checkpoint pending ${pendingDirs.length} directories`,
+        checkpoint: { pendingDirs },
+        scanMode,
+      }
+      : {
+        ...mergedPayload,
+        scanMode,
+      };
+
+    await saveFilesystemSnapshot(command.deviceId, orgId, snapshotTrigger, scanPath, snapshotPayload, tx);
+
+    const hotFromRun = extractHotDirectoriesFromSnapshotPayload(snapshotPayload, 24);
+    const mergedHotDirectories = Array.from(
+      new Set([
+        ...hotFromRun,
+        ...readHotDirectories(currentState?.hotDirectories, 24),
+      ])
+    ).slice(0, 24);
+
+    // Baseline completion is defined solely by having no pending checkpoint
+    // directories left to resume. The snapshot's `partial` flag must NOT gate
+    // this: `partial` is also set (and stays sticky across merges) for routine
+    // max-depth truncation, which is not a resumable condition — folding it in
+    // here left `lastBaselineCompletedAt` permanently null on any deep tree, which
+    // forced every subsequent scan back to a full baseline and defeated the
+    // incremental hot-directory path.
+    const baselineCompleted = scanMode === 'baseline' && pendingDirs.length === 0;
+    await upsertFilesystemScanState(command.deviceId, orgId, scanPath, {
+      lastRunMode: scanMode,
+      lastBaselineCompletedAt: baselineCompleted
+        ? new Date()
+        : currentState?.lastBaselineCompletedAt ?? null,
+      lastDiskUsedPercent: currentDiskUsedPercent ?? currentState?.lastDiskUsedPercent ?? null,
+      checkpoint: hasCheckpoint ? { pendingDirs } : {},
+      aggregate: scanMode === 'baseline' && !baselineCompleted ? mergedPayload : {},
+      hotDirectories: mergedHotDirectories,
+    }, tx);
+    return { hasCheckpoint, pendingDirs };
   });
+  if (!persisted) return;
+  const { hasCheckpoint, pendingDirs } = persisted;
 
   if (!hasCheckpoint || scanMode !== 'baseline') {
     return;
@@ -1695,6 +1759,8 @@ export async function handleFilesystemAnalysisCommandResult(
       and(
         eq(deviceCommands.deviceId, command.deviceId),
         eq(deviceCommands.type, filesystemAnalysisCommandType),
+        // Only a scan of this volume suppresses its continuation.
+        sql`${deviceCommands.payload}->>'path' = ${scanPath}`,
         sql`${deviceCommands.status} IN ('pending', 'sent')`
       )
     )
@@ -1706,6 +1772,7 @@ export async function handleFilesystemAnalysisCommandResult(
 
   const nextPayload: Record<string, unknown> = {
     ...(isObject(payload) ? payload : {}),
+    path: scanPath,
     scanMode: 'baseline',
     checkpoint: { pendingDirs },
     autoContinue: true,
@@ -1723,16 +1790,21 @@ export async function handleFilesystemAnalysisCommandResult(
     }
   );
   if (queued.command) {
+    await setFilesystemScanGeneration(command.deviceId, orgId, scanPath, queued.command.id);
     return;
   }
 
-  await db.insert(deviceCommands).values({
+  const [fallbackCommand] = await db.insert(deviceCommands).values({
     deviceId: command.deviceId,
     type: filesystemAnalysisCommandType,
     payload: nextPayload,
     status: 'pending',
     createdBy: command.createdBy,
-  });
+  }).returning({ id: deviceCommands.id });
+
+  if (fallbackCommand) {
+    await setFilesystemScanGeneration(command.deviceId, orgId, scanPath, fallbackCommand.id);
+  }
 }
 
 export function extractHotDirectoriesFromSnapshotPayload(payload: Record<string, unknown>, limit: number): string[] {
@@ -1854,12 +1926,12 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
+      ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
     ));
 
-  // Filter by deviceRole and osType
+  // Filter by deviceRole and osType using canonical predicate
   const eligibleRows = rows.filter((r) =>
-    (!r.roleFilter || r.roleFilter.length === 0 || (device.deviceRole && r.roleFilter.includes(device.deviceRole))) &&
-    (!r.osFilter || r.osFilter.length === 0 || (device.osType && r.osFilter.includes(device.osType)))
+    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
   );
 
   if (eligibleRows.length === 0) return EVENT_LOG_DEFAULTS;
@@ -2055,6 +2127,8 @@ export interface MonitoringConfigUpdate {
  * The defaults `config_policy_monitoring_watches` itself carries, so a
  * monitor-derived watch and a policy-tab watch for the same service are
  * indistinguishable on the wire (configurationPolicies.ts:425-427).
+ * maxRestartAttempts / restartCooldownSeconds are the fallback when a
+ * restart_service response carries no explicit values (W05c1).
  */
 const MONITOR_WATCH_DEFAULTS = {
   maxRestartAttempts: 3,
@@ -2135,6 +2209,10 @@ async function resolveMonitorDerivedWatches(deviceId: string): Promise<MonitorDe
       : (condition.processName as string | undefined);
     if (!name) continue;
 
+    const restartResponse = (def.responses ?? []).find(
+      (a) => a?.type === 'execute_command' && a?.kind === 'restart_service',
+    );
+
     watches.push({
       watch_type: def.kind === 'service' ? 'service' : 'process',
       name,
@@ -2145,11 +2223,9 @@ async function resolveMonitorDerivedWatches(deviceId: string): Promise<MonitorDe
       // supersedes the agent-side flag, so the restart still happens locally
       // and offline. A free-text `command` is NOT sniffed for intent — the
       // explicit discriminator is the contract.
-      auto_restart: (def.responses ?? []).some(
-        (a) => a?.type === 'execute_command' && a?.kind === 'restart_service',
-      ),
-      max_restart_attempts: MONITOR_WATCH_DEFAULTS.maxRestartAttempts,
-      restart_cooldown_seconds: MONITOR_WATCH_DEFAULTS.restartCooldownSeconds,
+      auto_restart: restartResponse !== undefined,
+      max_restart_attempts: (restartResponse?.maxAttempts as number | undefined) ?? MONITOR_WATCH_DEFAULTS.maxRestartAttempts,
+      restart_cooldown_seconds: (restartResponse?.cooldownSeconds as number | undefined) ?? MONITOR_WATCH_DEFAULTS.restartCooldownSeconds,
     });
   }
 
@@ -2311,12 +2387,12 @@ async function resolvePolicyMonitoringSettings(deviceId: string): Promise<Monito
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
+      ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
     ));
 
-  // Filter by deviceRole and osType
+  // Filter by deviceRole and osType using canonical predicate
   const eligibleRows = rows.filter((r) =>
-    (!r.roleFilter || r.roleFilter.length === 0 || (device.deviceRole && r.roleFilter.includes(device.deviceRole))) &&
-    (!r.osFilter || r.osFilter.length === 0 || (device.osType && r.osFilter.includes(device.osType)))
+    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
   );
 
   if (eligibleRows.length === 0) return null;
@@ -2338,6 +2414,7 @@ async function resolvePolicyMonitoringSettings(deviceId: string): Promise<Monito
     .where(and(
       eq(configPolicyMonitoringWatches.settingsId, winner.settingsId),
       eq(configPolicyMonitoringWatches.enabled, true),
+      isNull(configPolicyMonitoringWatches.retiredAt),
     ))
     .orderBy(configPolicyMonitoringWatches.sortOrder);
 

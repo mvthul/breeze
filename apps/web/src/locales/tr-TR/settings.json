@@ -95,7 +95,7 @@
     "loading": "Hizmet sorumluları yükleniyor…",
     "loadFailed": "Hizmet sorumluları yüklenemedi.",
     "retry": "Tekrar deneyin",
-    "empty": "Henüz hizmet sorumlusu yok.",
+    "empty": "Henüz hizmet sorumlusu yok. Başlamak için bir tane oluşturun.",
     "name": "Ad",
     "principalDescription": "Açıklama",
     "scopes": "Kapsamlar",
@@ -548,7 +548,16 @@
       },
       "ticketing": {
         "label": "Biletleme",
-        "description": "Durumlar, SLA'lar, dışa aktarmalar"
+        "description": "Durumlar, SLA'lar, kategoriler, formlar",
+        "linkCta": "Bilet ayarlarını yönet →"
+      },
+      "emailTemplates": {
+        "label": "E-posta şablonları",
+        "description": "Biletler, teklifler, faturalar, davetler"
+      },
+      "sendingDomains": {
+        "label": "Gönderen adresleri",
+        "description": "E-postaları kendi alan adınızdan gönderin"
       },
       "aiBudgets": {
         "label": "Yapay Zeka Bütçeleri",
@@ -565,6 +574,10 @@
       "loginBranding": {
         "label": "Oturum Aç Markalama",
         "description": "Giriş sayfasının görünümü"
+      },
+      "modules": {
+        "label": "Modüller",
+        "description": "Servis masası ve faturalandırma açık/kapalı"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",
@@ -595,6 +608,108 @@
       "saved": "Modüller güncellendi",
       "saveFailed": "Modüller güncellenemedi"
     }
+  },
+  "partnerSendingDomains": {
+    "title": "Özel gönderen adresleri",
+    "description": "Müşterilere giden e-postaları Breeze'in standart adresi yerine kendi alan adınızdan gönderin.",
+    "loadFailed": "Gönderim alan adlarınız yüklenemedi.",
+    "staticNote": "Bu sunucudaki gönderim alan adlarını sunucunun posta yapılandırması yönetir; bunlar için SPF ve DKIM Breeze dışında kurulur.",
+    "staticNotAllowed": "Bu alan adına izin vermesi için Breeze yöneticinize başvurun.",
+    "staticVerifyHint": "Bu alan adı, posta sunucunuz ondan gönderilen bir deneme iletisini kabul ettiği anda kullanılabilir olur.",
+    "lockedTitle": "Özel gönderen adresleri henüz kullanılamıyor",
+    "lockedProbation": "Hesabınız hâlâ doğrulanıyor. Özel gönderen adresleri doğrulama bitince açılır.",
+    "lockedRestricted": "Hesabınız kısıtlı olduğundan özel gönderen adresleri kullanılamıyor.",
+    "lockedNotAllowlisted": "Özel gönderen adresleri aşamalı olarak açılıyor ve hesabınızda henüz etkin değil.",
+    "lockedPartnerInactive": "Hesabınız etkin olmadığından özel gönderen adresleri kullanılamıyor.",
+    "lockedProviderKeySendOnly": "Bu sunucudaki posta anahtarı ileti gönderebilir ama alan adı yönetemez. Breeze yöneticinizden tam erişimli bir anahtar isteyin.",
+    "lockedShowVerification": "Doğrulama durumunu göster",
+    "addTitle": "Gönderim alan adı ekle",
+    "addLabel": "Alan adı",
+    "addPlaceholder": "mail.yourcompany.com",
+    "addInvalid": "mail.yourcompany.com gibi bir alan adı girin.",
+    "addSubmit": "Alan adı ekle",
+    "added": "Alan adı eklendi. DNS kayıtları hazırlanıyor.",
+    "recommendTitle": "Ayrı bir alt alan adı öneriyoruz",
+    "recommendReason1": "Breeze postanızın gönderim itibarını diğer postalarınızdan ayrı tutar.",
+    "recommendReason2": "Başka bir yerde e-posta sağlayıcımızda zaten doğrulanmış bir kök alan adı buraya eklenemez — başka bir hesaptan asla alan adı almayız.",
+    "recommendReason3": "Bazı posta filtreleri, DKIM geçse bile alıcının kendi alan adını kullanan dış gönderenleri işaretler. Alt alan adı bu birebir eşleşme kuralını aşar; bu da müşterileri kendi çalışma arkadaşları olan iç ekipler için en çok önem taşır.",
+    "statusProvisioning": "DNS kayıtları hazırlanıyor…",
+    "statusPending": "DNS bekleniyor",
+    "statusVerified": "Doğrulandı",
+    "statusAtRisk": "İlgi gerekiyor",
+    "statusFailed": "Başarısız",
+    "statusSuspended": "Askıya alındı",
+    "statusRemoving": "Kaldırılıyor…",
+    "provisioningSlow": "Bu her zamankinden uzun sürüyor. Denemeyi sürdürüyoruz — bu sayfadan ayrılıp sonra geri dönebilirsiniz.",
+    "recordsTitle": "Bu DNS kayıtlarını yayımlayın",
+    "recordsNote": "DNS değişikliklerinin bize ulaşması 72 saati bulabilir ve biz denetlemeyi sürdürürüz. Kayıtlar o süre sonunda hâlâ görünmüyorsa alan adı başarısız olarak işaretlenir ve yeniden deneyebilirsiniz.",
+    "recordsType": "Kayıt türü",
+    "recordsHost": "Ana bilgisayar etiketi",
+    "recordsFqdn": "Tam ad",
+    "recordsValue": "Değer",
+    "recordsPriority": "Öncelik",
+    "recordsCopied": "Panoya kopyalandı",
+    "checkNow": "Şimdi denetle",
+    "checkStarted": "DNS şimdi denetleniyor.",
+    "atRiskBanner": "{{fqdn}} adresindeki {{type}} kaydını artık göremiyoruz. Posta bu alan adından çıkmayı sürdürüyor, ancak o kaydı 72 saat içinde yeniden yayımlayın, yoksa alan adı başarısız olur.",
+    "failedProviderConflict": "Bu alan adı Breeze'de veya e-posta sağlayıcımızda kayıtlı olabilir. Ayrı bir alt alan adı kullanın ya da destek ekibine yazın.",
+    "failedProviderRejected": "E-posta sağlayıcımız bu alan adını reddetti.",
+    "failedQuotaExhausted": "Bu Breeze sunucusu e-posta sağlayıcısındaki alan adı sınırına ulaştı. Destek ekibine yazın.",
+    "failedDnsNotDetected": "DNS kayıtlarını 72 saat içinde bulamadık.",
+    "failedDnsRemoved": "DNS kayıtları kaldırıldı.",
+    "failedUnknown": "Doğrulama tamamlanmadı.",
+    "retry": "Yeniden dene",
+    "removeConfirm": "{{domain}} kaldırılsın mı? Bu alan adının postası Breeze'in standart göndereni üzerinden gider.",
+    "removeConfirmUnmanaged": "{{domain}} Breeze'den kaldırılsın mı? Alan adı e-posta sağlayıcısı hesabınızda kalır — Breeze kendi oluşturmadığı bir alan adını asla silmez.",
+    "removeStarted": "Alan adı kaldırılıyor.",
+    "suspendedNotice": "Breeze bu alan adını askıya aldı. Destek ekibine yazın.",
+    "lastSendError": "Son teslim sorunu: {{error}}",
+    "identitiesTitle": "Gönderen adresleri",
+    "identitiesDescription": "Her e-posta türünün hangi adresten çıkacağını seçin. Boş bıraktığınız tür Breeze'in standart göndereninde kalır.",
+    "identitiesNoDomain": "Önce bir alan adı doğrulayın, sonra gönderen adreslerini seçin.",
+    "streamSupportName": "Müşteri desteği",
+    "streamBillingName": "Faturalama",
+    "streamGeneralName": "Genel bildirimler",
+    "streamSupportMail": "Müşterilere giden talep güncellemeleri, portal davetleri ve portal parola sıfırlamaları.",
+    "streamBillingMail": "Teklifler ve faturalar.",
+    "streamGeneralMail": "Zamanlanmış rapor gönderimleri.",
+    "repliesSupport": "Talep postası Reply-To alanını {{inbound}} olarak ayarlar, böylece müşterinin yanıtı talebe geri döner. Portal davetleri ve parola sıfırlamaları Reply-To ayarlamaz, dolayısıyla o yanıtlar aşağıdaki adrese gider.",
+    "repliesSupportNoInbound": "Bu sunucunun gelen posta adresi yok, bu yüzden talep postasına gelen yanıtlar aşağıdaki adrese gider. Birinin okuduğu bir posta kutusu ya da Breeze'e ileten bir takma ad kullanın.",
+    "repliesBilling": "Teklifler ve faturalar Reply-To alanını faturalama e-postanız olarak ayarlar, yanıtlar oraya gider.",
+    "repliesGeneral": "Burada hiçbiri kendi Reply-To alanını ayarlamaz; yanıtlar aşağıdaki adrese ya da belirlediğiniz Reply-To adresine gider.",
+    "repliesMailboxHint": "İnsanlar ve otomatik yanıtlayıcılar bazen gönderen adresine yanıt verir, bu yüzden her birini gerçek bir posta kutusu ya da takma ad yapın.",
+    "identityDomain": "Doğrulanmış alan adı",
+    "identityLocalPart": "Adres",
+    "identityDisplayName": "Görünen ad",
+    "identityDisplayNamePlaceholder": "Acme Support",
+    "identityReplyTo": "Reply-To adresi (isteğe bağlı)",
+    "identityFrom": "{{address}} adresinden gönderir",
+    "identityClear": "Standart göndereni kullan",
+    "identitySaved": "Gönderen adresi kaydedildi.",
+    "identityCleared": "Breeze'in standart gönderenine dönüldü.",
+    "identityLocalPartInvalid": "Harf, rakam, nokta, tire, artı ve alt çizgi kullanın; noktalama işaretiyle başlamayın ya da bitirmeyin.",
+    "identityLocalPartReserved": "postmaster, abuse ve mailer-daemon ayrılmıştır.",
+    "identityDisplayNameInvalid": "Görünen ad bir e-posta adresi ya da bağlantı içeremez.",
+    "identityReplyToInvalid": "Eksiksiz bir e-posta adresi girin.",
+    "testTitle": "Deneme e-postası gönder",
+    "testDescription": "Bu alan adından kendi oturum açma adresinize tek bir ileti göndeririz.",
+    "testSubmit": "Deneme e-postası gönder",
+    "testQueued": "Deneme e-postası kuyruğa alındı.",
+    "testPending": "Deneme e-postası sürüyor…",
+    "testLastSent": "Son deneme {{when}} tarihinde gönderildi.",
+    "testLastFailed": "Son deneme {{when}} tarihinde başarısız oldu: {{error}}",
+    "errorDomainUnavailable": "Bu alan adı Breeze'de veya e-posta sağlayıcımızda kayıtlı olabilir. Ayrı bir alt alan adı kullanın ya da destek ekibine yazın.",
+    "errorDomainLimitReached": "En fazla {{max}} gönderim alan adı tutabilirsiniz. Önce birini kaldırın.",
+    "errorRateLimited": "Çok fazla deneme. Biraz bekleyip yeniden deneyin.",
+    "errorNotFound": "O alan adı artık yok. Sayfayı yenileyin.",
+    "errorDomainNotSendable": "O alan adı henüz doğrulanmadı, bu yüzden gönderen adresi olamaz.",
+    "errorUnsupported": "Bu sunucuda özel gönderen adresleri etkin değil.",
+    "errorAddFailed": "Alan adı eklenemedi.",
+    "errorCheckFailed": "DNS denetimi başlatılamadı.",
+    "errorRemoveFailed": "Alan adı kaldırılamadı.",
+    "errorIdentityFailed": "Gönderen adresi kaydedilemedi.",
+    "errorTestFailed": "Deneme e-postası gönderilemedi.",
+    "removeTitle": "Gönderim alan adı kaldırılsın mı?"
   },
   "loginBranding": {
     "saved": "Giriş markası kaydedildi",
@@ -734,6 +849,45 @@
     "deleteExpiredTitle": "Süresi dolmuş kayıt anahtarlarını silin",
     "deleteExpiredConfirm": "Süresi dolmuş tüm kayıt anahtarları silinsin mi? Canlı yükleyici indirme bağlantısını destekleyen anahtarlar hâlâ korunuyor. Bu geri alınamaz."
   },
+  "emailTemplates": {
+    "title": "E-posta şablonları",
+    "description": "Müşterilerin biletler, teklifler, faturalar ve portal davetleri için aldığı e-postaları özelleştirin. Yanıt bildirimi asla yanıt metnini içermez.",
+    "usingDefault": "Varsayılan",
+    "custom": "Özel",
+    "subject": "Konu",
+    "heading": "Başlık",
+    "buttonLabel": "Düğme etiketi",
+    "html": "HTML gövdesi",
+    "htmlAria": "E-posta HTML gövdesi",
+    "insert": "Ekle:",
+    "preview": "Önizleme",
+    "save": "Şablonu kaydet",
+    "reset": "Varsayılana sıfırla",
+    "saved": "E-posta şablonu kaydedildi",
+    "saveFailed": "E-posta şablonu kaydedilemedi",
+    "loadFailed": "E-posta şablonları yüklenemedi.",
+    "back": "Listeye dön",
+    "markupRemoved": "Bazı işaretleme kaldırıldı: {{tags}}",
+    "variables": {
+      "ticket_number": "Bilet numarası",
+      "ticket_subject": "Bilet konusu",
+      "requester_name": "Talep edenin adı",
+      "requester_email": "Talep edenin e-postası",
+      "org_name": "Kuruluş adı",
+      "partner_name": "Şirket adı",
+      "portal_url": "Portal URL'si",
+      "email_only_hint": "Yalnızca e-posta ipucu",
+      "resolution_note": "Çözüm notu",
+      "quote_number": "Teklif numarası",
+      "total": "Toplam",
+      "expiry_date": "Son geçerlilik tarihi",
+      "accept_url": "Kabul URL'si",
+      "invoice_number": "Fatura numarası",
+      "due_date": "Vade tarihi",
+      "invite_url": "Davet URL'si",
+      "cta_button": "Düğme"
+    }
+  },
   "inboundEmail": {
     "saveError": "Gelen e-posta ayarları kaydedilemedi — oturumunuzun MFA'nın yeniden doğrulanması gerekebilir. Tekrar dene.",
     "orgNotAccessible": "Bu organizasyon ortağınızın bünyesinde mevcut değil.",
@@ -764,6 +918,8 @@
     "dropUnverified": "Gönderen kimlik doğrulamasını geçemeyen postaları bırakın (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Kapatıldığında, doğrulanmamış postalar incelenmek üzere karantinaya alınır. Açıkken sessizce bırakılır. Bu, <all>tümü</all> doğrulanmamış gönderenler için geçerlidir; bireysel mesajları kontrolde başarısız olan eşlenen müşteriler de dahil.",
     "enableAutoresponse": "Yeni e-posta bildirimlerini onaylayan bir otomatik yanıt gönderin",
+    "editEmailTemplates": "Onay e-postası E-posta şablonları altında düzenlenir.",
+    "editEmailTemplatesLink": "E-posta şablonlarını düzenle",
     "autoresponseMessage": "Otomatik yanıt mesajı",
     "subject": "Konu",
     "subjectPlaceholder": "Talebinizi aldık: {{ticket_subject}}",
@@ -1169,7 +1325,25 @@
         "enableLifecycle": {
           "label": "Donanım yaşam döngüsü",
           "description": "Müşterinizin cihazları için güncel değişim planını gösterir."
+        },
+        "enableNetworkVisibility": {
+          "label": "Ağ görünürlüğü",
+          "description": "Müşteri portalında ağ durumunu ve keşfedilen varlıkları salt okunur olarak gösterir."
         }
+      }
+    },
+    "accent": {
+      "title": "Portal vurgusu",
+      "description": "Müşteri portalınızdaki düğmelerin ve bağlantıların rengi. Durum renkleri asla değişmez.",
+      "options": {
+        "spruce": "Ladin",
+        "ink": "Mürekkep",
+        "oxblood": "Boğa kanı",
+        "navy": "Lacivert",
+        "plum": "Erik",
+        "bronze": "Bronz",
+        "teal": "Petrol",
+        "forest": "Orman yeşili"
       }
     },
     "support": {
@@ -1548,6 +1722,7 @@
       "actMode": {
         "label": "Eylem modu",
         "hint": "Etkinleştirildiğinde, bu zamanlama onay beklemek yerine belirli düzeltmeleri otomatik olarak uygulayabilir.",
+        "deploymentDisabledHint": "Bu dağıtımda BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED kapalı olduğundan eylem modu kullanılamıyor. Etkinleştirmek için yöneticinizle iletişime geçin.",
         "disabledHint": "Eylem modunu etkinleştirmek için tüm kuruluşlara tam iş ortağı erişimi gerekir.",
         "scopeNote": "Gözetimsiz düzeltmeler yalnızca durmuş bir hizmeti yeniden başlatmakla sınırlıdır ve yalnızca kuruluşuna manage_services:restart izni zaten verilmiş cihazlarda uygulanır. Bunun dışındaki her şey onay beklemeye devam eder.",
         "disableForOrg": "Bu kuruluş için eylem modunu devre dışı bırak",
@@ -1621,7 +1796,9 @@
       "act": "Eylem",
       "actConsequence": "İzin verilen işlemleri tıklama olmadan yürütür. Otomatik geri alma yoktur.",
       "actUnavailable": "Bu aracı için henüz kullanılamıyor.",
-      "shadowUnavailableForKind": "Bu aracı yalnızca rapor okur ve yazar — gölgede izlenecek hiçbir şey yok."
+      "designerAct": "Açık",
+      "designerActConsequence": "Zamanlamaya göre veya isteğe bağlı çalışır ve bir Fleet Design yazar. Hiçbir cihazı değiştirmez.",
+      "shadowApprovalNotice": "Öneriler Onaylar'a düşer; birini onaylamak onu gerçekten çalıştırır — deneme çalıştırması değildir."
     },
     "allOrgs": "Tüm kuruluşlar",
     "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",
@@ -2630,6 +2807,7 @@
         "set_agent_log_level": "Aracı günlük düzeyini ayarla",
         "set_device_context": "Cihaz bağlamını ayarla",
         "sync_huntress_data": "Huntress verilerini eşitle",
+        "system_cleanup": "Sistem temizliği",
         "take_screenshot": "Ekran görüntüsü al"
       },
       "actions": {
@@ -2877,6 +3055,11 @@
           "scan": "Bir güvenlik taraması çalıştır",
           "status": "Güvenlik taraması durumu",
           "vulnerabilities": "Güvenlik açığı tara"
+        },
+        "system_cleanup": {
+          "list": "Sistem temizleme eylemlerini listele",
+          "run": "Sistem temizliğini çalıştır",
+          "status": "Sistem temizliği durumu"
         }
       },
       "alwaysOnCount_one": "{{count}} salt okunur araç",
@@ -3060,6 +3243,11 @@
       "searchPlaceholder": "Betik ara…",
       "selectedCount_one": "{{count}} betik yetkilendirildi",
       "selectedCount_other": "{{count}} betik yetkilendirildi"
+    },
+    "designerNote": {
+      "title": "Bu aracı yalnızca okur ve rapor yazar",
+      "body": "Bir Fleet Designer hiçbir zaman bir cihazda bir şey çalıştırmaz. Açık, çalışabileceği ve tasarımlarını seçtiğiniz alıcılara teslim edebileceği anlamına gelir.",
+      "ack": "Bu aracının gözetimsiz çalıştığını ve Fleet Design teslim ettiğini anlıyorum."
     }
   },
   "apiKeyForm": {
@@ -3402,7 +3590,8 @@
   "catalogSettingsPage": {
     "productCatalog": "Ürün Kataloğu",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Ürün kataloğu yalnızca iş ortağı hesaplarına açıktır.",
-    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Fiyat teklifleri, sözleşmeler ve faturalarda kullanılan donanım, yazılım ve hizmet öğelerini yönetin. Entegrasyonlar → Distribütörler altında distribütörleri (Pax8, TD SYNNEX) bağlayın."
+    "manageHardwareSoftwareAndServiceItemsUsedAcrossQuotesCon": "Fiyat teklifleri, sözleşmeler ve faturalarda kullanılan donanım, yazılım ve hizmet öğelerini yönetin. Entegrasyonlar → Distribütörler altında distribütörleri (Pax8, TD SYNNEX) bağlayın.",
+    "distributorsLink": "Distribütör bağlantılarını yönet →"
   },
   "changePasswordForm": {
     "currentPasswordIsRequired": "Geçerli şifre gerekli",
@@ -3656,7 +3845,10 @@
     "passkeyStepUpNoUsableFactor": "Hesabınızın mevcut faktörü burada onaylanamıyor. Geçiş anahtarı eklemek için bir yöneticiyle iletişime geçin.",
     "passkeyStepUpIncorrectCode": "Kod hatalı. Lütfen tekrar deneyin.",
     "passkeyStepUpTooManyAttempts": "Çok fazla deneme. Lütfen birkaç dakika içinde tekrar deneyin.",
-    "passkeyStepUpVerificationExpired": "Doğrulamanın süresi doldu. Lütfen tekrar doğrulayın."
+    "passkeyStepUpVerificationExpired": "Doğrulamanın süresi doldu. Lütfen tekrar doğrulayın.",
+    "passkeyRegistrationServerError": "Geçiş anahtarı kaydı başarısız oldu. Lütfen tekrar deneyin.",
+    "deletePasskeyVerifyHeading": "Bir geçiş anahtarını silmek için doğrulayın",
+    "deletePasskeyVerifyHint": "Yukarıdaki geçiş anahtarlarından birini kaldırmadan önce buraya güncel bir MFA kodu girin. Bu kod yeni bir geçiş anahtarı eklemeyi etkilemez."
   },
   "roleManager": {
     "roles": "Roller",
@@ -4124,7 +4316,6 @@
     "responseSLAMinutes": "Yanıt SLA (dakika)",
     "resolutionSLAMinutes": "Çözünürlük SLA (dakika)",
     "billableByDefault": "Varsayılan olarak faturalandırılabilir",
-    "defaultHourlyRate": "Varsayılan saatlik ücret ({{currency}})",
     "save": "Kaydet",
     "cancel": "İptal",
     "responseMinutes": "{{count}}m yanıt",
@@ -4139,7 +4330,9 @@
     "active": "Aktif",
     "inactive": "Etkin değil",
     "deactivate": "Devre dışı bırak",
-    "activate": "Etkinleştir"
+    "activate": "Etkinleştir",
+    "slaMinutesMustBeNumbers": "SLA dakikaları sayı olmalıdır.",
+    "categorySlaOverridesOrgNote": "Bu SLA, bu kategorideki biletler için herhangi bir kuruluş düzeyi SLA geçersiz kılmasına göre önceliklidir."
   },
   "ticketPrioritiesTab": {
     "prioritiesAndSLAsSaved": "Öncelikler ve SLA'lar kaydedildi",
@@ -4202,7 +4395,10 @@
     "inboundEmail": "Gelen E-posta",
     "cannedResponses": "Hazır yanıtlar",
     "checkingAccess": "Erişiminiz kontrol ediliyor...",
-    "timeTracking": "Zaman Takibi"
+    "timeTracking": "Zaman Takibi",
+    "email": "E-posta",
+    "templates": "Şablonlar",
+    "timeCapture": "Zaman kaydı"
   },
   "ticketFormsCard": {
     "heading": "Başvuru formları",
@@ -4647,7 +4843,8 @@
       "description": "Bu kuruluş için iş ortağı çapındaki SLA varsayılanlarını geçersiz kılın. İş ortağı varsayılanını devralmak için bir hücreyi boş bırakın.",
       "priority": "Öncelik",
       "response": "Yanıt (dak)",
-      "resolution": "Çözünürlük (dak)"
+      "resolution": "Çözünürlük (dak)",
+      "categoryOverridesNote": "Her ikisi de ayarlandığında, bilet kategorisinin SLA'sı bu kuruluş düzeyindeki geçersiz kılmalara göre önceliklidir."
     },
     "billing": {
       "title": "Faturalandırma varsayılanları",
@@ -5177,7 +5374,15 @@
     "columns": {
       "email": "E-posta",
       "role": "Rol",
-      "lastLogin": "Son giriş"
+      "lastLogin": "Son giriş",
+      "mfaStatus": "MFA durumu"
+    },
+    "mfaStatus": {
+      "enrolled": "Kayıtlı",
+      "pending": "Beklemede",
+      "pendingByDate": "Beklemede — {{date}} tarihine kadar kaydolun",
+      "overdue": "Gecikti",
+      "notRequired": "Gerekli değil"
     },
     "status": {
       "active": "Aktif",
@@ -5587,5 +5792,38 @@
     "saveFailed": "Bu ayarlar kaydedilemedi.",
     "loading": "Yükleniyor…",
     "loadFailed": "Betik yazımı ayarları yüklenemedi."
+  },
+  "ticketingHubPage": {
+    "heading": "Bilet Ayarları",
+    "description": "Tüm organizasyonlarınıza uygulanan durumlar, SLA'lar, kategoriler, giriş formları, e-posta, şablonlar ve zaman kaydı."
+  },
+  "catalogDefaultsCard": {
+    "title": "Katalog varsayılanları",
+    "description": "Katalog içe aktarmalarını ve teklif düzenleyicisinin otomatik doldurmasını önceden doldurmak için kullanılır — fiyat çözümlemesini doğrudan etkilemez.",
+    "loading": "Katalog varsayılanları yükleniyor...",
+    "loadError": "Katalog varsayılanları yüklenemedi.",
+    "saveError": "Katalog varsayılanları kaydedilemedi",
+    "saveSuccess": "Katalog varsayılanları kaydedildi",
+    "saveButton": "Kaydet"
+  },
+  "workTypes": {
+    "title": "İş türleri",
+    "description": "Süre kayıtlarında yapılan işi belirtin. Kategori varsayılanları, teknisyenlerin iş türü seçmesine yardımcı olur.",
+    "newName": "Yeni iş türü",
+    "create": "İş türü ekle",
+    "archive": "Arşivle",
+    "archived": "Arşivlendi",
+    "archivedClearedDefaults_one": "Arşivlendi. {{count}} kategoride varsayılan olmaktan çıkarıldı.",
+    "archivedClearedDefaults_other": "Arşivlendi. {{count}} kategoride varsayılan olmaktan çıkarıldı.",
+    "saveError": "İş türü kaydedilemedi. Lütfen tekrar deneyin.",
+    "saveSuccess": "İş türü kaydedildi.",
+    "nameTaken": "Bu ada sahip bir iş türü zaten var.",
+    "rename": "Yeniden adlandır",
+    "loadError": "İş türleri yüklenemedi.",
+    "empty": "Henüz iş türü yok. İlk iş türünüzü yukarıdan ekleyin."
+  },
+  "ticketCategories": {
+    "defaultWorkType": "Varsayılan iş türü",
+    "defaultWorkTypeHelp": "Bu kategori için iş türü belirtilmeden süre kaydedildiğinde kullanılır."
   }
 }

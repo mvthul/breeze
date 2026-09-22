@@ -8,7 +8,7 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import { db } from '../db';
-import { pgErrorCode } from '../utils/pgErrors';
+import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import {
   automationPolicies,
   automationPolicyCompliance,
@@ -63,6 +63,7 @@ import { devices, sites } from '../db/schema';
 import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
 import { eq, and, desc, sql, inArray, gte, lte, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { isAiAgentPrincipal } from '../middleware/auth';
 
 async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly string[]): Promise<void> {
   await Promise.all([...new Set(deviceIds)].map((deviceId) =>
@@ -72,6 +73,7 @@ async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly strin
   ));
 }
 import type { AiTool } from './aiTools';
+import type { ToolExecutionContext } from './toolExecutionContext';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import type { UserPermissions } from './permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
@@ -128,7 +130,62 @@ import type {
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
-type FleetHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
+type FleetHandler = (
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  context?: ToolExecutionContext,
+) => Promise<string>;
+
+/**
+ * #6200: the shared refusal for a user-owned release (see
+ * `USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`) whose auth
+ * and named approver disagree. The row this branch is about to create carries
+ * a `users` FK, and who owns it is the one thing the branch must never get
+ * wrong — so refuse rather than trust either side. Mirrors
+ * `aiToolsTicketing.ts`'s `log_time_entry` guard exactly.
+ */
+function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
+  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
+}
+
+/**
+ * #6206: `true` when the caller is an AI-agent principal, i.e. `auth.user.id`
+ * is an `aiAgents.id` (attribution only, never a `users` row — see
+ * `aiAgents/agentAuthContext.ts`), not a real user id.
+ *
+ * Every tier-2 fleet branch that stores `auth.user.id` in a `users` FK must
+ * consult this first. Tier 2 auto-executes inline under the agent's own auth,
+ * so unlike the tier-3 sites fixed in #6200 there is no approver to substitute
+ * and `USER_OWNED_RELEASE_ACTIONS` cannot reach them. Writing the agent id
+ * anyway is a guaranteed 23503 — and a caught 23503 inside
+ * `withDbAccessContext` aborts the surrounding transaction, so the fix has to
+ * avoid the write, never catch it.
+ */
+function isAgentPrincipalCaller(auth: AuthContext): boolean {
+  return isAiAgentPrincipal(auth);
+}
+
+/**
+ * #6206: the refusal a tier-2 fleet action returns to an agent principal when
+ * the row it would write needs a real `users` owner and no agent-safe design
+ * exists for it. Mirrors `aiToolsTicketing.ts`'s `refuseAgentPrincipal`
+ * (#4209) exactly, including the deliberate absence of a `success` key — the
+ * SDK's error classifier only flags `{ error }` payloads that carry no
+ * `success`/`data`/`configured` key, so adding one would record a policy
+ * refusal as an ordinary successful tool call.
+ *
+ * Used by `manage_patches:{approve,decline,defer,bulk_approve}`, which write
+ * `patch_approvals.approved_by`. Approving a patch across a partner's fleet is
+ * policy, not reporting: it is deliberately NOT given a null/system
+ * attribution, because a nulled `approved_by` would leave an approval nobody
+ * can be held to. Giving agents a supervised route means lifting these to
+ * tier 3 so #6200's approver substitution applies — a product decision, and
+ * the typed error code is what lets the agent's loop relay the limitation
+ * instead of retrying into a 23503.
+ */
+function refuseFleetAgentPrincipal(action: string): string {
+  return JSON.stringify({ error: 'agent_principal_unsupported_action', action });
+}
 
 // ============================================
 // Helpers
@@ -563,18 +620,39 @@ async function narrowMonitorsToCallerReach<T extends { policyId: string | null }
   return rows.filter((r) => !!r.policyId && reachable.has(r.policyId));
 }
 
-/** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing */
+/** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing.
+ *
+ *  #6200: the third `context` argument is FORWARDED, not dropped. It used to
+ *  be truncated here (the trap `services/aiTools.ts`'s `CoreAiTool.handler`
+ *  doc calls out by name), which meant the user-owned-release branches below
+ *  could not see `context.approverRelease` at all and so could not refuse a
+ *  release whose auth and named approver disagree. */
 function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
-  return async (input, auth) => {
+  return async (input, auth, context) => {
     try {
-      return await fn(input, auth);
+      return await fn(input, auth, context);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Internal error';
       const code = pgErrorCode(err);
       console.error(`[fleet:${toolName}]`, input.action, message, err);
 
       // Surface specific DB constraint errors instead of generic "Operation failed"
-      if (code === '23503') return JSON.stringify({ error: `Referenced record not found — a required ID (template, device, policy, etc.) does not exist or was deleted.` });
+      if (code === '23503') {
+        // #6206: a violated FK into `users` is a DIFFERENT failure from a
+        // stale template/device/policy id, and the generic message actively
+        // misdirects — it sends the reader looking for a deleted record when
+        // the real cause is an actor id that is not a users row at all (an
+        // `aiAgents.id` under an agent principal). Name it, so the next
+        // occurrence is diagnosable from the tool output alone.
+        const constraint = pgErrorConstraint(err);
+        if (constraint && /users_id_fk$/.test(constraint)) {
+          return JSON.stringify({
+            error: 'Acting user not found — this action records an owner in a users column, and the '
+              + 'current principal is not a user record. An AI agent principal cannot own this row.',
+          });
+        }
+        return JSON.stringify({ error: `Referenced record not found — a required ID (template, device, policy, etc.) does not exist or was deleted.` });
+      }
       if (code === '23505') return JSON.stringify({ error: `Duplicate entry — a record with this name or key already exists.` });
       if (code === '22P02') return JSON.stringify({ error: `Invalid ID format — expected a valid UUID.` });
       // Fail closed: anything else may embed the query/column list (#2603).
@@ -596,6 +674,15 @@ function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
 // `listFleetFindings`, which this tool calls directly, per CLAUDE.md's
 // warning about AI-tool/route dual-map drift. Keep these value lists in
 // sync with routes/fleetFindings.ts's KIND_VALUES/SEVERITY_VALUES/STATUS_VALUES.
+
+/**
+ * Annotation for a deployment page that a site/device-restricted caller had rows
+ * removed from (or that came back empty while the caller is restricted). Without
+ * it an empty page is indistinguishable from "this organization runs no
+ * deployments", which the model then reports as fact.
+ */
+const DEPLOYMENT_SITE_SCOPE_PARTIAL_NOTE =
+  'Some deployments were withheld because they reach devices outside your site access — this list may be incomplete.';
 
 const FLEET_FINDING_KIND_VALUES = ['metric_anomaly_pattern', 'log_correlation', 'reliability_offenders'] as const;
 const FLEET_FINDING_SEVERITY_VALUES = ['info', 'warning', 'error', 'critical'] as const;
@@ -629,9 +716,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'patching',
+    searchHint: 'software deployments: list, get, device status, create, start, pause, resume, cancel',
     definition: {
       name: 'manage_deployments',
-      description: 'Manage staged software deployments: list, get details, view per-device status, create, start, pause, resume, or cancel deployments.',
+      description: 'Manage staged software deployments: list, get details, view per-device status, create, start, pause, resume, or cancel deployments. Actions: list, get, device_status, create, start, pause, resume, cancel.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -650,7 +739,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: safeHandler('manage_deployments', async (input, auth) => {
+    handler: safeHandler('manage_deployments', async (input, auth, context) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
@@ -658,18 +747,44 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       // their member devices (mirrors routes/deployments.ts:760-766). Control
       // actions affect ALL member devices, so deny if the deployment includes
       // ANY out-of-site device (fail closed). Unrestricted callers: always false.
-      const deploymentSiteDenied = async (deploymentId: string): Promise<boolean> => {
-        if (!auth.allowedSiteIds && !auth.allowedDeviceIds) return false;
-        const members = await db.select({ deviceId: deploymentDevices.deviceId, siteId: devices.siteId })
+      // Batched form: ONE membership query for any number of deployments, so
+      // `list` never degenerates into an N+1 for a restricted caller. Returns
+      // the subset of `deploymentIds` the caller must not reach; an empty set
+      // (and zero queries) for an unrestricted caller.
+      const deniedDeploymentIds = async (deploymentIds: string[]): Promise<Set<string>> => {
+        if (!auth.allowedSiteIds && !auth.allowedDeviceIds) return new Set();
+        if (deploymentIds.length === 0) return new Set();
+        const members = await db.select({
+          deploymentId: deploymentDevices.deploymentId,
+          deviceId: deploymentDevices.deviceId,
+          siteId: devices.siteId,
+        })
           .from(deploymentDevices)
           .leftJoin(devices, eq(deploymentDevices.deviceId, devices.id))
-          .where(eq(deploymentDevices.deploymentId, deploymentId));
+          .where(inArray(deploymentDevices.deploymentId, deploymentIds));
+        const denied = new Set<string>();
+        const seen = new Set<string>();
         // Three arguments, not two (#6096): the member IS a device, so the
         // exact-device axis applies — a device-bound run shares its site with
         // every sibling, and site alone would wave them through. `?? null`
         // keeps an unresolvable member failing closed for such a run.
-        return members.some((m) => deviceSiteDenied(auth, m.siteId, m.deviceId ?? null));
+        for (const m of members) {
+          seen.add(m.deploymentId);
+          if (deviceSiteDenied(auth, m.siteId, m.deviceId ?? null)) denied.add(m.deploymentId);
+        }
+        // A deployment with NO member rows produced no evidence either way, so
+        // the denied set stayed empty and it was visible and CONTROLLABLE by a
+        // restricted caller (fail-OPEN). An unattributable resource is denied
+        // to a restricted caller — the same rule the SLA and browser-policy
+        // gates apply to an empty target list.
+        for (const id of deploymentIds) {
+          if (!seen.has(id)) denied.add(id);
+        }
+        return denied;
       };
+
+      const deploymentSiteDenied = async (deploymentId: string): Promise<boolean> =>
+        (await deniedDeploymentIds([deploymentId])).has(deploymentId);
 
       if (action === 'list') {
         const conditions: SQL[] = [];
@@ -678,6 +793,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.status === 'string') conditions.push(eq(deployments.status, input.status as any));
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
+        // The site filter below lands AFTER the SQL LIMIT, so a restricted
+        // caller whose newest deployments are all out of scope got an empty (or
+        // short) page while reachable older ones existed — and the model reads
+        // an empty page as "none exist". Over-scan a wider, still-bounded page
+        // and slice after filtering, exactly as `manage_maintenance_windows`
+        // does in this file.
+        const restricted = Boolean(auth.allowedSiteIds || auth.allowedDeviceIds);
+        const scanLimit = restricted ? Math.min(Math.max(limit * 5, 100), 500) : limit;
         const rows = await db.select({
           id: deployments.id,
           name: deployments.name,
@@ -690,9 +813,26 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }).from(deployments)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(desc(deployments.createdAt))
-          .limit(limit);
+          .limit(scanLimit);
 
-        return JSON.stringify({ deployments: rows, showing: rows.length });
+        // Deployments are site-attributable through their member devices, so a
+        // site-restricted caller must not even see the metadata of a deployment
+        // that reaches a device outside their sites (audit §1.1). Batched: one
+        // extra query for a restricted caller, zero for an unrestricted one.
+        const denied = await deniedDeploymentIds(rows.map((r) => r.id));
+        const filtered = denied.size > 0 ? rows.filter((r) => !denied.has(r.id)) : rows;
+        const visible = filtered.slice(0, limit);
+        // Tell the model the page was narrowed, so a short/empty result is not
+        // reported back as "this organization has no deployments".
+        const dropped = restricted && (denied.size > 0 || rows.length > filtered.length);
+
+        return JSON.stringify({
+          deployments: visible,
+          showing: visible.length,
+          ...(dropped || (restricted && visible.length === 0)
+            ? { scopeNote: DEPLOYMENT_SITE_SCOPE_PARTIAL_NOTE }
+            : {}),
+        });
       }
 
       if (action === 'get') {
@@ -703,6 +843,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [dep] = await db.select().from(deployments).where(and(...conditions)).limit(1);
         if (!dep) return JSON.stringify({ error: 'Deployment not found or access denied' });
+        // Same gate the control actions carry: the progress counts below
+        // aggregate over EVERY member device, so they are unattributable for a
+        // caller who cannot reach all of them (audit §1.1).
+        if (await deploymentSiteDenied(dep.id)) return JSON.stringify({ error: 'Deployment not found or access denied' });
 
         // Get progress stats
         const stats = await db.select({
@@ -757,6 +901,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'create') {
+        // #6200: `deployments.created_by` below is a `users` FK. An
+        // agent-originated intent is released as the APPROVER
+        // (USER_OWNED_RELEASE_ACTIONS), so the two must agree.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
         const [dep] = await db.insert(deployments).values({
           orgId,
@@ -914,21 +1064,23 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'patching',
+    searchHint: 'missing patches, KB approval, not CVEs: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback',
     deviceArgs: ['deviceIds', 'deviceId'],
     definition: {
       name: 'manage_patches',
-      description: 'Manage patches: list patches present on the org\'s devices (optionally scoped to a single device via deviceId, which also returns per-device install status), check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, or rollback. Required fields per action: install requires BOTH patchIds and deviceIds; scan requires deviceIds; bulk_approve requires patchIds; approve/decline/defer require patchId OR patchName; rollback requires BOTH patchId and deviceIds; list/compliance require none. approve/decline/defer accept an optional ringId to scope the action to one update ring (omit for the partner-wide blanket); decline also accepts allRings to revoke the approval in every update ring at once, not just the current scope — use this to fully unapprove a patch a device might otherwise still install under a different ring. To configure patch schedules and auto-approval policies, use manage_policy_feature_link with featureType "patch".',
+      description: 'CVEs: get_vulnerability_report. Install requires BOTH patchIds and deviceIds. Approvals default partner-wide. Schedules/auto-approval: manage_policy_feature_link featureType "patch". Actions: list, compliance, scan, approve, decline, defer, bulk_approve, install, rollback.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback'], description: 'The action to perform. Required inputs: install needs patchIds AND deviceIds; scan needs deviceIds; bulk_approve needs patchIds; approve/decline/defer need patchId or patchName; rollback needs patchId AND deviceIds. To configure patch policies/auto-approval, use manage_policy_feature_link with featureType "patch".' },
+          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback'], description: "Install needs patchIds AND deviceIds; scan: deviceIds; bulk_approve: patchIds; approve/decline/defer: patchId or patchName; rollback: patchId+deviceIds." },
           patchId: { type: 'string', description: 'Patch UUID. Required for approve/decline/defer/rollback unless patchName is given (rollback always needs the UUID).' },
-          patchName: { type: 'string', description: 'Patch title or KB/external ID to look up when the UUID is unknown (for approve/decline/defer only). Matched against patches present on this org\'s fleet; an ambiguous match returns the candidates instead of guessing.' },
+          patchName: { type: 'string', description: "Patch title or KB/external ID on this org's fleet (approve/decline/defer). Ambiguous matches return candidates." },
           patchIds: { type: 'array', items: { type: 'string' }, description: 'Patch UUIDs. Required for bulk_approve and install.' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs. Required for scan, install, and rollback.' },
           deviceId: { type: 'string', description: 'Single device UUID to scope the patch list to one device (for list); returns per-device install status' },
-          ringId: { type: 'string', description: 'Update ring UUID to scope approve/decline/defer to one ring (for approve/decline/defer only; omit for the partner-wide blanket). Cannot be combined with allRings.' },
-          allRings: { type: 'boolean', description: 'Decline only: revoke this patch\'s approval in every update ring for the partner, not just the current/blanket scope — use to fully unapprove a patch that was approved in more than one ring. Cannot be combined with ringId.' },
+          ringId: { type: 'string', description: 'Update ring UUID for approve/decline/defer. Omit for partner-wide approval; mutually exclusive with allRings.' },
+          allRings: { type: 'boolean', description: "Decline only: revoke approval in every update ring for the partner. Mutually exclusive with ringId." },
           source: { type: 'string', enum: ['microsoft', 'apple', 'linux', 'third_party', 'custom'], description: 'Filter by source' },
           severity: { type: 'string', enum: ['critical', 'important', 'moderate', 'low', 'unknown'], description: 'Filter by severity' },
           status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'deferred'], description: 'Filter by approval status' },
@@ -946,11 +1098,18 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: safeHandler('manage_patches', async (input, auth) => {
+    handler: safeHandler('manage_patches', async (input, auth, context) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
       if (action === 'approve' || action === 'decline' || action === 'defer' || action === 'bulk_approve') {
+        // #6206: all four write `patch_approvals.approved_by`, a `users` FK.
+        // These are tier-2 actions, so an agent principal would execute them
+        // inline under its own auth and store an `aiAgents.id` there — a
+        // guaranteed 23503 the agent cannot interpret (the generic mapping in
+        // safeHandler blames a missing template/device/policy). Refuse before
+        // any partner resolution or write.
+        if (isAgentPrincipalCaller(auth)) return refuseFleetAgentPrincipal(action);
         if (!canManagePartnerWidePolicies(auth)) {
           return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
         }
@@ -1231,6 +1390,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'install') {
+        // #6200: `patch_jobs.created_by` below is a `users` FK. An
+        // agent-originated intent is released as the APPROVER
+        // (USER_OWNED_RELEASE_ACTIONS), so the two must agree.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!Array.isArray(input.patchIds) || !Array.isArray(input.deviceIds)) return JSON.stringify({ error: 'patchIds and deviceIds are required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
@@ -1267,6 +1432,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'rollback') {
+        // #6200: `patch_rollbacks.initiated_by` below is a `users` FK.
+        if (approverReleaseMismatch(auth, context)) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!input.patchId) return JSON.stringify({ error: 'patchId is required' });
         if (!Array.isArray(input.deviceIds) || input.deviceIds.length === 0) return JSON.stringify({ error: 'deviceIds is required for rollback' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
@@ -1411,10 +1580,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'devices',
+    searchHint: 'device groups: list, get, preview, membership log, create, update, delete, add/remove devices',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_groups',
-      description: 'Manage device groups: list groups, get details with members, preview dynamic filter results, view membership audit log, create/update/delete groups, add/remove devices.',
+      description: 'Manage device groups: list groups, get details with members, preview dynamic filter results, view membership audit log, create/update/delete groups, add/remove devices. Actions: list, get, preview, membership_log, create, update, delete, add_devices, remove_devices.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1739,10 +1910,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    // Spec's Domains table (2026-09-17-agent-tool-efficiency-and-mcp-modernization-design.md)
+    // lists maintenance windows under `patching`, alongside patches, update
+    // rings and deployments — a patch-cadence construct, not monitoring.
+    domain: 'patching',
+    searchHint: 'maintenance windows: list, get, check active now',
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_maintenance_windows',
-      description: 'Query maintenance windows (read-only): list windows, get details with occurrences, check what is in maintenance right now. To create or modify maintenance windows, use manage_policy_feature_link with featureType "maintenance".',
+      description: 'Read maintenance windows and occurrences. Actions: list, get, active_now, create (disabled), update (disabled), delete (disabled). For writes, use manage_policy_feature_link with featureType "maintenance".',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -2008,6 +2184,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'scripts',
+    searchHint: 'automations: list, get, history, enable, disable, run',
     definition: {
       name: 'manage_automations',
       description: 'Query and operate on automations: list, get details, view run history, enable/disable, or manually trigger a run. To create, update, or delete automations, use manage_policy_feature_link with featureType "automation".',
@@ -2349,9 +2527,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'monitoring',
+    searchHint: 'alert rules: list templates, list rules, get rule, test rule, list channels, alert summary',
     definition: {
       name: 'manage_alert_rules',
-      description: 'Query alert rules, templates, and notification channels (read-only). Alert rules are managed through configuration policies — use manage_policy_feature_link with featureType "alert_rule" to create or modify alert rules. This tool is for querying only: list_templates to discover available templates, list_rules/get_rule to inspect existing rules, test_rule to check rule state, list_channels for notification channels, alert_summary for overview. Actions: list_templates, list_rules, get_rule, test_rule, list_channels, alert_summary.',
+      description: 'Read alert rules, templates and channels. Actions: list_templates, list_rules, get_rule, test_rule, list_channels, alert_summary, create_rule (disabled), update_rule (disabled), delete_rule (disabled). For writes, use manage_policy_feature_link with featureType "alert_rule".',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -2574,6 +2754,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'admin',
+    searchHint: 'reports: list, generate, data, create, update, delete, history, download',
     definition: {
       name: 'generate_report',
       description: 'Manage reports: list saved definitions, generate on-demand, get report data directly, download a completed report run, create/update/delete report definitions, or view generation history.',
@@ -2596,6 +2778,30 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('generate_report', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      // #6206: `create` writes `reports.created_by` and `generate` writes
+      // `report_runs.requested_by_user_id` — both `users` FKs fed from
+      // `auth.user.id`, which under an agent principal is an `aiAgents.id`.
+      //
+      // Today these two never reach their insert: the scope gate resolves
+      // `auth.user.id` against `users` (siteScope.ts's
+      // `resolveExactReportAuthorityInSystemContext`) and denies an agent id as
+      // `user_inactive`, so the agent gets a scope-denied message for a reason
+      // that has nothing to do with the real limitation. That is incidental
+      // protection from an unrelated lookup, one refactor away from becoming
+      // the 23503 — so refuse explicitly, with the same typed code as the
+      // patch-approval actions above.
+      //
+      // Writing NULL/system attribution instead was considered and rejected:
+      // `persistedSiteScopeValues` would still record the run's authority as
+      // `principalKind: 'user'` with the agent id in `execution_scope_user_id`,
+      // and `reportScheduleWorker.ts` refuses a non-user principal when it
+      // re-authorizes a recurring definition. An agent-owned report identity is
+      // a real design (a principal kind the scope columns and the scheduler
+      // both understand), not a nullable column — tracked as follow-up.
+      if ((action === 'create' || action === 'generate') && isAgentPrincipalCaller(auth)) {
+        return refuseFleetAgentPrincipal(action);
+      }
 
       if (action === 'list') {
         const conditions: SQL[] = [];
@@ -3053,9 +3259,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'monitoring',
+    searchHint: 'service and process monitoring watches: list',
     definition: {
       name: 'manage_service_monitors',
-      description: 'Query service and process monitoring watches (read-only). To add or remove monitoring watches, use manage_policy_feature_link with featureType "monitoring" and action "update" to configure watches on a configuration policy.',
+      description: 'Query service and process monitoring watches. Actions: list, add (disabled), remove (disabled). For writes, use manage_policy_feature_link with featureType "monitoring" and action "update".',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -3133,6 +3341,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
   registerTool({
     tier: 1,
+    domain: 'devices',
+    searchHint: 'fleet hygiene findings, metric anomaly patterns, log correlations and reliability offenders',
     definition: {
       name: 'get_fleet_findings',
       description: 'List fleet hygiene findings: deduplicated, aggregate issues detected across the fleet (metric anomaly patterns, log correlations, reliability offenders). Read-only — use manage_deployments/manage_patches/run_script etc. to act on a finding\'s remediation.',

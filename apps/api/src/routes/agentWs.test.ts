@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { createHash } from 'node:crypto';
 
 // #3409 PR4a: sealing a secret envelope requires v3 (AAD-bound) encryption,
@@ -7,6 +8,7 @@ import { createHash } from 'node:crypto';
 process.env.APP_ENCRYPTION_KEY_ID = 'current';
 process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-material' });
 import { and, eq, notInArray } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
 const applyCommandAutomationTerminalMock = vi.fn().mockResolvedValue(true);
@@ -29,6 +31,21 @@ vi.mock('../db', () => ({
   },
   withSystemDbAccessContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn())
+}));
+
+// #6503: the WS close/error handlers delegate the actual offline transition +
+// transition-effects persistence to offlineDetector.ts's transitionDeviceOffline
+// (which itself opens a BullMQ queue / hits offlineEffectsStore internals this
+// file's mocks don't cover). Mocked at the module boundary like the other
+// external-service collaborators below (redis, presence, ...) so every onClose
+// test in this file exercises the WIRING (which args agentWs.ts passes) without
+// depending on offlineDetector's own internals, which are covered directly by
+// jobs/offlineDetector.test.ts.
+const { transitionDeviceOfflineMock } = vi.hoisted(() => ({
+  transitionDeviceOfflineMock: vi.fn(async () => ({ transitioned: true })),
+}));
+vi.mock('../jobs/offlineDetector', () => ({
+  transitionDeviceOffline: transitionDeviceOfflineMock,
 }));
 
 vi.mock('../db/schema', () => ({
@@ -274,16 +291,12 @@ vi.mock('../services/automationActionResults', () => ({
     applyAutomationActionTerminalMock(...(args as [])),
 }));
 
-// sw-install orphan branch: keep the real SW_INSTALL_COMMAND_ID_REGEX (shared
-// with routes/agents/commands.ts) and mock only the deployment_results writer.
+// Keep the real software result module exports while mocking reconciliation.
 vi.mock('../services/softwareDeploymentResult', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/softwareDeploymentResult')>();
   return {
     ...actual,
     applySoftwareInstallResult: vi.fn(),
-    // #5128 — a software_install now carries a real device_commands UUID, so
-    // its result lands on the GENERIC owned-command path and is reconciled
-    // here instead of by the sw-install-<...> regex branch.
     reconcileSoftwareInstallResult: vi.fn(),
   };
 });
@@ -424,6 +437,7 @@ import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { publishEvent } from '../services/eventBus';
 import {
   consumeDispatchedExpectation,
+  recordDispatchedExpectation,
   refreshDispatchedExpectation,
 } from '../services/agentWorkExpectation';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
@@ -1215,18 +1229,95 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
 
     vi.clearAllMocks();
     vi.mocked(publishEvent).mockResolvedValue('event-id');
-    const { whereMock, setMock } = rigStatusUpdateCapture();
-    // onClose status pre-check select — return a live row so the offline write runs.
+    transitionDeviceOfflineMock.mockClear();
+    transitionDeviceOfflineMock.mockResolvedValue({ transitioned: true });
+
+    // #6503: the offline write no longer goes through updateDeviceStatus's
+    // bare notInArray(TERMINAL) update — it delegates to
+    // transitionDeviceOffline (offlineDetector.ts), which persists the
+    // durable offline-transition effect the sweep-driven mark-offline path
+    // produces and applies its own inArray(status, ['online']) guard (a
+    // strictly narrower condition that still excludes decommissioned/
+    // quarantined rows, since neither is 'online' — covered directly by
+    // jobs/offlineDetector.test.ts). This test pins the WIRING: onClose must
+    // call it with ['online'] only, never widening to preserve 'updating'.
     vi.mocked(db.select).mockReturnValue(selectAgentDevice([
       { id: 'device-123', siteId: 'site-1', status: 'online', hostname: 'host-1' },
     ]) as any);
 
     await handlers.onClose({}, ws as any);
 
-    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'offline' }));
-    expect(whereMock).toHaveBeenCalledWith(
-      and(eq(devices.agentId, 'agent-123'), TERMINAL_GUARD)
-    );
+    expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
+  });
+
+  it('never calls transitionDeviceOffline on disconnect while the device is updating (#6503)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+
+    vi.clearAllMocks();
+    transitionDeviceOfflineMock.mockClear();
+
+    // The pre-existing 'updating' preserve check must still short-circuit
+    // BEFORE transitionDeviceOffline is reached — a WS disconnect mid-update
+    // must not race the offline detector's own timeout-based handling of
+    // stale 'updating' devices.
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([
+      { id: 'device-123', siteId: 'site-1', status: 'updating', hostname: 'host-1' },
+    ]) as any);
+
+    await handlers.onClose({}, ws as any);
+
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('transitions the device offline via transitionDeviceOffline on a WS error (#6503)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+
+    vi.clearAllMocks();
+    transitionDeviceOfflineMock.mockClear();
+    transitionDeviceOfflineMock.mockResolvedValue({ transitioned: true });
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ status: 'online' }]) as any);
+
+    handlers.onError({}, ws as any);
+    // onError fires the DB-access work fire-and-forget (`void runWithAgentDbAccess(...)`);
+    // flush the microtask queue so its awaited select + transitionDeviceOffline call land.
+    await new Promise((r) => setImmediate(r));
+
+    expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
+  });
+
+  it('never calls transitionDeviceOffline on a WS error while the device is updating (#6503)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+
+    vi.clearAllMocks();
+    transitionDeviceOfflineMock.mockClear();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ status: 'updating' }]) as any);
+
+    handlers.onError({}, ws as any);
+    await new Promise((r) => setImmediate(r));
+
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
   });
 
   it('excludes decommissioned/quarantined rows when a WS heartbeat flips a device online', async () => {
@@ -1327,12 +1418,8 @@ describe('agent websocket command results', () => {
 
   // ── #5128: software_install results on the GENERIC owned-command path ────
   //
-  // Before #5128 a WS-pushed install carried the synthetic
-  // `sw-install-<deployment>-<device>-<attempt>` id and was reconciled by the
-  // regex branch. New dispatches persist a device_commands row FIRST and push
-  // with its UUID, so the result lands here — without this wiring the
-  // deployment_results row strands `pending` forever on the websocket
-  // transport.
+  // Dispatches persist a device_commands row and push with its UUID.
+  // The result must reconcile deployment_results on the WebSocket transport.
   it('reconciles a software_install result delivered under a real command UUID', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
     const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
@@ -2782,6 +2869,78 @@ describe('backup command_result non-terminal guards (guard ordering integration)
       expect.objectContaining({ status: 'completed', agentStatus: 'partial' }),
       expect.anything()
     );
+  });
+
+  // #5413 lesson (a). The strict queue schema (jobs/queueSchemas.ts) validates
+  // the SAME payload the route schema already accepted. When the two drift —
+  // as they did over `originalPath` on VSS-backed Windows runs — the enqueue
+  // throws a ZodError AFTER the dispatch expectation was consumed, and the old
+  // catch just re-recorded the expectation and dropped the result. That left
+  // three Windows file jobs `running` forever with the device online, a full
+  // transferredSize, a snapshotId, no snapshot row and no reaper rule covering
+  // "result rejected". A schema rejection is deterministic — retrying the same
+  // result can only be rejected again — so it must fail the job loudly.
+  it('fails the backup job loudly when the strict queue schema rejects the result (#5413)', async () => {
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any);
+
+    vi.mocked(consumeDispatchedExpectation).mockResolvedValue({ ok: true });
+    vi.mocked(applyBackupCommandResultToJob).mockResolvedValue({
+      applied: true,
+      snapshotDbId: null,
+      providerSnapshotId: null,
+    });
+    // Reproduce the real failure: the queue-side parse refuses an unmodeled key.
+    vi.mocked(enqueueBackupResults).mockImplementationOnce(async () => {
+      throw new z.ZodError([
+        {
+          code: 'unrecognized_keys',
+          keys: ['originalPath'],
+          path: ['result', 'snapshot', 'files', 0],
+          message: 'Unrecognized key: "originalPath"',
+        } as never,
+      ]);
+    });
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'completed',
+        result: JSON.stringify({
+          snapshotId: 'snap-1',
+          status: 'completed',
+          filesBackedUp: 1,
+          snapshot: {
+            id: 'snap-1',
+            files: [{ sourcePath: '\\\\?\\GLOBALROOT\\x', originalPath: 'C:\\x', backupPath: 'o/1' }],
+          },
+        }),
+      })
+    } as any, ws as any);
+
+    // The job is driven terminal with a diagnosable error rather than left running.
+    expect(applyBackupCommandResultToJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId,
+        orgId: 'org-123',
+        deviceId: 'device-123',
+        resultStatus: 'failed',
+        result: expect.objectContaining({
+          error: expect.stringContaining('rejected by the server queue-result schema'),
+        }),
+      })
+    );
+    // And the expectation is NOT re-armed — a retry of the identical payload
+    // would be rejected identically, so re-arming only re-hangs the job.
+    expect(recordDispatchedExpectation).not.toHaveBeenCalled();
+
+    errorSpy.mockRestore();
   });
 });
 
@@ -5046,101 +5205,18 @@ describe('late terminal_start failure binds to the exact terminal generation', (
   });
 });
 
-describe('sw-install WS orphan-result branch', () => {
-  const deploymentUuid = '11111111-1111-4111-8111-111111111111';
-  const deviceUuid = '33333333-3333-4333-8333-333333333333';
-  const otherDeviceUuid = '55555555-5555-4555-8555-555555555555';
-  const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
-
-  beforeEach(() => {
-    vi.mocked(applySoftwareInstallResult).mockReset();
-    vi.mocked(applySoftwareInstallResult).mockResolvedValue(null);
-  });
-
-  function swResult(overrides: Record<string, unknown> = {}) {
-    return {
-      type: 'command_result' as const,
-      commandId: swCommandId,
-      status: 'completed' as const,
-      exitCode: 0,
-      stdout: 'installed',
-      durationMs: 9_000,
-      ...overrides,
-    };
-  }
-
-  it('applies a sw-install result bound to the socket-authenticated device', async () => {
-    await processOrphanedCommandResult('agent-sw', deviceUuid, swResult());
-
-    expect(applySoftwareInstallResult).toHaveBeenCalledTimes(1);
-    expect(applySoftwareInstallResult).toHaveBeenCalledWith({
-      deploymentId: deploymentUuid,
-      deviceId: deviceUuid,
+describe('retired software-install WS results', () => {
+  it.each(['', '-2'])('ignores IDs without a persisted command row (suffix %s)', async (suffix) => {
+    vi.mocked(applySoftwareInstallResult).mockClear();
+    const deviceId = '33333333-3333-4333-8333-333333333333';
+    await processOrphanedCommandResult('agent-sw', deviceId, {
+      type: 'command_result',
+      commandId: `sw-install-11111111-1111-4111-8111-111111111111-${deviceId}${suffix}`,
       status: 'completed',
       exitCode: 0,
       stdout: 'installed',
-      stderr: undefined,
-      error: undefined,
-      startedAt: undefined,
-      durationMs: 9_000,
-      attemptNumber: 0,
     });
-  });
-
-  it('parses the attempt suffix off a retried sw-install commandId and passes it through', async () => {
-    const retriedCommandId = `sw-install-${deploymentUuid}-${deviceUuid}-2`;
-
-    await processOrphanedCommandResult('agent-sw', deviceUuid, swResult({ commandId: retriedCommandId }));
-
-    expect(applySoftwareInstallResult).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deploymentId: deploymentUuid,
-        deviceId: deviceUuid,
-        attemptNumber: 2,
-      })
-    );
-  });
-
-  it('rejects a sw-install result whose embedded device id does not match the authenticated device', async () => {
-    await processOrphanedCommandResult('agent-sw', otherDeviceUuid, swResult());
-
     expect(applySoftwareInstallResult).not.toHaveBeenCalled();
-  });
-
-  it('passes failure details through to the shared helper', async () => {
-    await processOrphanedCommandResult(
-      'agent-sw',
-      deviceUuid,
-      swResult({ status: 'failed', exitCode: 1603, error: 'msi fatal error', stdout: undefined })
-    );
-
-    expect(applySoftwareInstallResult).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deploymentId: deploymentUuid,
-        deviceId: deviceUuid,
-        status: 'failed',
-        exitCode: 1603,
-        error: 'msi fatal error',
-      })
-    );
-  });
-
-  it('does not treat non-sw-install command ids as software installs', async () => {
-    await processOrphanedCommandResult(
-      'agent-sw',
-      deviceUuid,
-      swResult({ commandId: 'dev-push-abc123' })
-    );
-
-    expect(applySoftwareInstallResult).not.toHaveBeenCalled();
-  });
-
-  it('survives a helper failure without throwing (logged + captured)', async () => {
-    vi.mocked(applySoftwareInstallResult).mockRejectedValueOnce(new Error('db down'));
-
-    await expect(
-      processOrphanedCommandResult('agent-sw', deviceUuid, swResult())
-    ).resolves.toBeUndefined();
   });
 });
 
@@ -5374,5 +5450,32 @@ describe('orphaned SNMP poll outcomes (#6021)', () => {
       type: 'command_result', commandId, status: 'failed', error: 'forged', result: { deviceId },
     });
     expect(set).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('cleanup supplemental command results', () => {
+  beforeEach(() => { vi.resetAllMocks(); });
+  it.each(['cancelled', 'completed', 'failed'])('records a %s cleanup result without changing the command', async (status) => {
+    const { commandResultHandlers } = await import('../services/commandResultHandlers');
+    const handler = vi.spyOn(commandResultHandlers, 'file_delete').mockResolvedValue(undefined);
+    try {
+      const { handlers, ws } = await connectedAgent('agent-cleanup-late', {
+        deviceId: 'device-cleanup', orgId: 'org-cleanup', partnerId: 'partner-cleanup',
+      });
+      const commandId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const command = { id: commandId, deviceId: 'device-cleanup', type: 'file_delete', status, targetRole: 'agent',
+        payload: { cleanupRunId: 'stored-run', path: '/tmp/a' }, result: { status } };
+      const where = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([command]) });
+      vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({ where }) } as never);
+      await handlers.onMessage({ data: JSON.stringify({ type: 'command_result', commandId, status: 'failed', error: 'password=secret-value' }) } as never, ws as never);
+      const lookup = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+      expect(lookup.params).toEqual(expect.arrayContaining([commandId, 'device-cleanup', 'agent', 'file_delete']));
+      expect(lookup.sql).toContain("? 'cleanupRunId'");
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+        command, result: expect.objectContaining({ status: 'failed', error: expect.not.stringContaining('secret-value') }),
+      }));
+      expect(db.update).not.toHaveBeenCalled();
+    } finally { handler.mockRestore(); }
   });
 });

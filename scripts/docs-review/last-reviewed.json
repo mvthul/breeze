@@ -1,5 +1,5 @@
 {
-  "lastReviewedRef": "v0.113.0",
-  "reviewedAt": "2026-09-13",
-  "notes": "v0.113.0 release sync (docs/v0.113.0-sync): new env vars BREEZE_AI_SCRIPT_AUTHORING_ENABLED (default true) / BREEZE_AI_SCRIPT_REVIEWER_MODEL / STRIPE_SESSION_REVOCATION_MODE / APP_ENCRYPTION_KEY_ID boot rules / executor M365_SYNC_* knobs (environment), full v0.113.0 section in deploy/upgrades (22 migrations, Strict-proposal approval bar, unattended lane off, Jobs + Monitoring renames), Fleet Designer kind (ai-agents), device function (devices), service deliverables (contracts, portal), step-up grant (approval-security), MFA enrolment grace (users-and-roles, hardening), backup GC prefix reclamation (backup/storage). AI script authoring, monitors, Jobs nav, mobile attestation and BMR pages had already landed with their PRs."
+  "lastReviewedRef": "c3f059006",
+  "reviewedAt": "2026-09-21",
+  "notes": "v0.115.0 diff sweep (v0.114.0..origin/main): topology M1 site map (flag-gated) + classic topology relabel (discovery, reference/api), composite monitor kind + consecutiveFailures 100 + cumulative/replace policy-link inheritance + legacy-rule-to-monitor converter (backend-only, monitors/alerts), billing profile rounding+minimum stamping on time entries (ticketing), bare-metal Restore-as-VM VHDX + DR BARE_METAL_REBUILD step + 24h restore ceiling + specific failure reasons (backup/*), helper device-credential-lifecycle enforcement + partner trust review partner-wide-manage gate + script-parameter-as-data hardening (security/hardening, agents/helper)."
 }

@@ -4,7 +4,7 @@ import type Redis from 'ioredis';
 import { z } from 'zod';
 import { renewRevocationLease } from '../services/remoteRevocationLease';
 import { applyProbeResult, parseProbeCommandId } from '../services/assetProbe';
-import { eq, and, ne, notInArray, sql } from 'drizzle-orm';
+import { eq, and, or, ne, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
@@ -21,6 +21,7 @@ import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacenc
 import { enqueueBackupResults } from '../jobs/backupWorker';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult, recordMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
+import { transitionDeviceOffline } from '../jobs/offlineDetector';
 import { getRedis, isRedisAvailable } from '../services/redis';
 import { isIP } from 'node:net';
 import { processDeviceIPHistoryUpdate } from '../services/deviceIpHistory';
@@ -49,7 +50,11 @@ import {
   readAgentCertificateAssertion,
   type AgentCertificateAssertion,
 } from '../services/agentCertificateBinding';
-import { getAgentTenantState } from '../services/tenantStatus';
+import {
+  checkDeviceStatus,
+  checkDeviceTenantState,
+  checkDeviceTokenSuspension,
+} from '../middleware/deviceCredentialLifecycle';
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID, writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { redactSecretsFromOutput, redactOptionalSecretText, redactAgentResultErrorFields } from '../services/secretRedaction';
@@ -73,9 +78,7 @@ import {
 import { getActiveTrustKeyset } from '../services/manifestSigning';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
 import {
-  applySoftwareInstallResult,
   reconcileSoftwareInstallResult,
-  SW_INSTALL_COMMAND_ID_REGEX,
 } from '../services/softwareDeploymentResult';
 import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 import {
@@ -88,6 +91,7 @@ import { recordSnmpPollFailure, commandResultHandlers, normalizeDiscoveryHosts }
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyCommandAutomationTerminal } from '../services/automationTerminalEvidence';
 import {
+  commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
   BACKUP_QUEUE_ACK_RESULT_STATUS,
 } from '../services/commandResultAcceptance';
@@ -762,7 +766,8 @@ function rejectMalformedCriticalResult(
 
 function normalizeCriticalResultIfNeeded(
   commandType: string,
-  result: AgentCommandResult
+  result: AgentCommandResult,
+  commandPayload?: unknown
 ): { normalizedResult: AgentCommandResult; stdout: string | undefined; validationError: string | null } {
   if (!detectResultValidationFamily(commandType)) {
     return {
@@ -782,7 +787,7 @@ function normalizeCriticalResultIfNeeded(
       durationMs: result.durationMs,
       error: result.error,
       result: result.result,
-    });
+    }, { commandPayload });
     if (!validated) {
       return {
         normalizedResult: result,
@@ -972,8 +977,9 @@ export async function isAgentDeviceStillAuthorized(
     // can remove/change the row between upgrade and the next frame. The absent
     // hash compatibility branch exists only for direct unit-test handler seams.
     if (!row) return authenticatedTokenHash === undefined;
-    if (row.status === 'decommissioned' || row.status === 'quarantined') return false;
-    if (row.agentTokenSuspendedAt) return false;
+    // Shared predicates — middleware/deviceCredentialLifecycle.ts.
+    if (checkDeviceStatus(row)) return false;
+    if (checkDeviceTokenSuspension(row)) return false;
     if (authenticatedTokenHash !== undefined) {
       const match = matchRoleScopedAgentTokenHash({
         ...row,
@@ -1071,17 +1077,15 @@ export async function validateAgentToken(
     return { ok: false, reason: 're_enrollment_required' };
   }
 
-  if (device.status === 'decommissioned') {
+  // Shared predicates (middleware/deviceCredentialLifecycle.ts). Every denial
+  // collapses to this path's opaque `unauthorized`: a decommissioned or
+  // quarantined device and a token auto-suspended for cross-tenant probing all
+  // fail closed, and the agent's reconnect loop is the intended ops signal.
+  if (checkDeviceStatus(device)) {
     return { ok: false, reason: 'unauthorized' };
   }
 
-  if (device.status === 'quarantined') {
-    return { ok: false, reason: 'unauthorized' };
-  }
-
-  // Task 18: tokens auto-suspended for cross-tenant probing fail closed.
-  // The reconnect loop is the intended ops alarm signal.
-  if (device.agentTokenSuspendedAt) {
+  if (checkDeviceTokenSuspension(device)) {
     return { ok: false, reason: 'unauthorized' };
   }
 
@@ -1115,7 +1119,7 @@ export async function validateAgentToken(
   // device_commands row, so any WS session is a fully-capable control channel
   // that the drain-mode command filtering can't see. The agent falls back to
   // heartbeat polling, which is the actual self_uninstall delivery path.
-  if ((await getAgentTenantState(device.orgId)) !== 'active') {
+  if ((await checkDeviceTenantState(device.orgId, { allowDraining: false })).denied) {
     return { ok: false, reason: 'unauthorized' };
   }
 
@@ -1377,47 +1381,6 @@ export async function processOrphanedCommandResult(
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process monitor check result for ${agentId}:`, err);
-      captureException(err);
-    }
-    return;
-  }
-
-  // Software install results dispatched over WS carry their tracking IDs in
-  // the commandId itself: `sw-install-<deploymentUuid>-<deviceUuid>-<attempt>`.
-  // The agent normally POSTs these to the HTTP result route
-  // (routes/agents/commands.ts), but if that goroutine fails the result can
-  // still arrive here — without this branch the deployment_results row
-  // strands as 'pending' forever. The helper's status='pending' +
-  // retryCount=attempt guard makes double delivery (HTTP + WS) AND a stale
-  // result from a retry-superseded attempt a no-op. The attempt suffix is
-  // optional (legacy in-flight ids default to 0).
-  const swInstallMatch = result.commandId.match(SW_INSTALL_COMMAND_ID_REGEX);
-  if (swInstallMatch) {
-    const [, swDeploymentId, swDeviceId, swAttempt] = swInstallMatch;
-    // Bind to the socket's authenticated device identity, like the other
-    // branches: a compromised agent must not write another device's row.
-    if (!swDeploymentId || !swDeviceId || swDeviceId !== authenticatedDeviceId) {
-      console.warn(
-        `[AgentWs] Rejecting software-install result ${result.commandId} from agent ${agentId}: ` +
-        `authenticatedDevice=${authenticatedDeviceId}`
-      );
-      return;
-    }
-    try {
-      await applySoftwareInstallResult({
-        deploymentId: swDeploymentId,
-        deviceId: authenticatedDeviceId,
-        status: result.status,
-        exitCode: result.exitCode,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        error: result.error,
-        startedAt: result.startedAt,
-        durationMs: result.durationMs,
-        attemptNumber: swAttempt ? parseInt(swAttempt, 10) : 0,
-      });
-    } catch (err) {
-      console.error(`[AgentWs] Failed to apply software-install result ${result.commandId}:`, err);
       captureException(err);
     }
     return;
@@ -1792,6 +1755,7 @@ export async function processOrphanedCommandResult(
             referencedFiles: backupData?.referencedFiles,
             referencedBytes: backupData?.referencedBytes,
             backupType: backupData?.backupType,
+            metadata: backupData?.metadata,
             systemStateManifest: backupData?.systemStateManifest,
             layoutManifest: backupData?.layoutManifest,
             bareMetal: backupData?.bareMetal,
@@ -1825,6 +1789,55 @@ export async function processOrphanedCommandResult(
     } catch (err) {
       console.error(`[AgentWs] Failed to process backup results for ${agentId}:`, err);
       captureException(err);
+      // Scope note: this catches a ZodError from ANY strict schema on the
+      // enqueue path (backupQueueJobDataSchema wraps the actor meta and the
+      // job keys too), not only the backup-result fields. That breadth is
+      // deliberate — every one of them is a deterministic server-side
+      // rejection, and describeZodIssues names which field failed.
+      if (err instanceof z.ZodError) {
+        // #5413 lesson (a): a schema rejection is DETERMINISTIC — the strict
+        // queue schema (jobs/queueSchemas.ts) refused a payload the route
+        // schema already accepted, and every retry of the identical result
+        // will be refused again. Re-recording the expectation here is what
+        // left three Windows file jobs `running` forever with the device
+        // online, no snapshot row and no reaper rule covering "result
+        // rejected". Fail the job loudly instead so the class fails fast.
+        const detail = describeZodIssues(err);
+        console.error(
+          `[AgentWs] Backup result for job ${backupJob.id} was REJECTED by the queue schema ` +
+            `(${detail}) — failing the job instead of dropping the result. This is a ` +
+            'server-side schema gap: a field accepted by routes/backup/resultSchemas.ts must ' +
+            'also be declared in jobs/queueSchemas.ts (#5413).'
+        );
+        try {
+          const failed = await applyBackupCommandResultToJob({
+            jobId: backupJob.id,
+            orgId: backupJob.orgId,
+            deviceId: backupJob.deviceId,
+            resultStatus: 'failed',
+            result: {
+              error: `Backup result rejected by the server queue-result schema: ${detail}`,
+            },
+          });
+          if (!failed.applied) {
+            // Guarded no-op (job already terminal/cancelled). Say so, or the
+            // log above reads as "job failed" while the row was untouched.
+            console.warn(
+              `[AgentWs] Backup job ${backupJob.id} was already terminal — schema-rejection failure not applied`
+            );
+          }
+        } catch (failErr) {
+          console.error(`[AgentWs] Failed to fail backup job ${backupJob.id} after a schema rejection:`, failErr);
+          captureException(failErr);
+          // The fail-write itself broke (transient DB/Redis). Without this the
+          // job would be left running with its expectation already consumed —
+          // the very state this branch exists to prevent. Re-arm so a
+          // legitimate agent retry can still be accepted; it will land in this
+          // same branch and get another chance to fail the job.
+          await recordDispatchedExpectation('backup', backupJob.deviceId, backupJob.id);
+        }
+        return;
+      }
       // We already consumed the dispatch expectation but persistence failed
       // (e.g. transient BullMQ/DB error). Re-record it so a legitimate agent
       // retry of this same result can be accepted instead of being permanently
@@ -2034,7 +2047,11 @@ async function processCommandResult(
               eq(deviceCommands.id, result.commandId),
               eq(deviceCommands.deviceId, did),
               eq(deviceCommands.targetRole, 'agent'),
-              commandAcceptsAgentResultCondition()
+              or(
+                commandAcceptsAgentResultCondition(),
+                and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
+              )
             )
           )
           .limit(1)
@@ -2062,7 +2079,11 @@ async function processCommandResult(
                 eq(deviceCommands.id, result.commandId),
                 eq(devices.agentId, agentId),
                 eq(deviceCommands.targetRole, 'agent'),
-                commandAcceptsAgentResultCondition()
+                or(
+                  commandAcceptsAgentResultCondition(),
+                  and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                  and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
+                )
               )
             )
             .limit(1)
@@ -2112,7 +2133,7 @@ async function processCommandResult(
       normalizedResult: rawNormalizedResult,
       stdout: rawStdout,
       validationError,
-    } = normalizeCriticalResultIfNeeded(command.type, result);
+    } = normalizeCriticalResultIfNeeded(command.type, result, command.payload);
 
     // #3409 PR4a — exact-value redaction against the secrets THIS command
     // carried, before either the device_commands.result write below or (via
@@ -2126,6 +2147,23 @@ async function processCommandResult(
       rawNormalizedResult,
       rawStdout,
     );
+
+    const cleanupCommand = command;
+    const recordSupplementalCleanup = async () => {
+      const payload = cleanupCommand.payload as { cleanupRunId?: unknown; runId?: unknown } | null;
+      const runId = cleanupCommand.type === 'system_cleanup_run' ? payload?.runId : payload?.cleanupRunId;
+      if (!['file_delete', 'system_cleanup_run'].includes(cleanupCommand.type) || typeof runId !== 'string' || !runId) return;
+      await runWithAgentOrgDbAccess('agentWs.commandResult.cleanupEvidence', orgId, partnerId, () =>
+        commandResultHandlers[cleanupCommand.type]!({
+          agentId, command: cleanupCommand, commandId: result.commandId, result: normalizedResult,
+          resolvedDeviceId: resolvedDeviceId!, stdout,
+        })
+      );
+    };
+    if (['file_delete', 'system_cleanup_run'].includes(command.type) && !commandAcceptsAgentResult(command.status, command.result, command.type)) {
+      await recordSupplementalCleanup();
+      return;
+    }
 
     // D20-D: mssql_backup/hyperv_backup are QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES
     // — the agent's FIRST reply for these can be a non-terminal queue-
@@ -2218,6 +2256,7 @@ async function processCommandResult(
     );
 
     if (updatedCommands.length === 0) {
+      await recordSupplementalCleanup();
       console.warn(`[AgentWs] Ignoring stale or already-processed command result ${result.commandId} for agent ${agentId}`);
       return;
     }
@@ -2330,16 +2369,27 @@ async function processCommandResult(
       }
     }
 
-    // #5128 — software installs now arrive here. A software_install pushed over
-    // this socket used to carry the synthetic
-    // `sw-install-<deployment>-<device>-<attempt>` id and was reconciled by the
-    // regex branch above; new dispatches persist a device_commands row FIRST and
-    // push with its UUID, so they land on this generic path instead. Without
-    // this the deployment_results row would strand as `pending` forever on the
-    // websocket transport. The regex branch above is kept for frames already in
-    // flight from before the deploy. Reconciliation is idempotent (guarded on
-    // status='pending' + matching attempt), so a result that reaches BOTH
-    // transports is still applied once.
+    if (command.type === 'network_diagnostic') {
+      try {
+        // No org wrap: the topology result path establishes its own bounded
+        // system context, and the producer identity comes from this connection.
+        const { ingestTopologyDiagnosticCommandResult } = await import('../services/topology/diagnosticResults');
+        await ingestTopologyDiagnosticCommandResult({
+          commandType: command.type,
+          deviceId: resolvedDeviceId!,
+          agentId,
+          commandId: result.commandId,
+          result: normalizedResult.result,
+        });
+      } catch (err) {
+        console.error(`[AgentWs] Failed to persist topology diagnostic result ${result.commandId}:`, err);
+        captureException(err);
+      }
+    }
+
+    // Software installs use persisted command UUIDs on both transports.
+    // Reconciliation is idempotent (pending status + matching attempt), so
+    // a result reaching both transports is applied once.
     if (command.type === 'software_install') {
       try {
         // Short org wrap (#3021): deployment_results is an RLS-guarded org table.
@@ -3437,7 +3487,14 @@ onClose: async (_event: unknown, ws: WSContext) => {
                 console.log(`[AgentWs] Preserving 'updating' status for agent ${agentId} on disconnect`);
                 return;
               }
-              await updateDeviceStatus(agentId, 'offline');
+              const { transitioned } = await transitionDeviceOffline(agentId, ['online']);
+              // Only announce the offline event if the device row actually
+              // flipped — transitionDeviceOffline no-ops (transitioned:false)
+              // on a status/last_seen_at race (e.g. a reconnect or a
+              // concurrent write beat us to it), and publishing here anyway
+              // would tell subscribers the device went offline when the DB
+              // still says otherwise.
+              if (!transitioned) return;
               publishEvent('device.offline', agentDb.orgId, {
                 deviceId: current.id,
                 hostname: current.hostname,
@@ -3447,7 +3504,13 @@ onClose: async (_event: unknown, ws: WSContext) => {
               });
             } catch (err) {
               console.error(`[AgentWs] Failed to check status for ${agentId} on disconnect, falling back to offline:`, err);
-              await updateDeviceStatus(agentId, 'offline');
+              captureException(err instanceof Error ? err : new Error(String(err)));
+              const { transitioned } = await transitionDeviceOffline(agentId, ['online']).catch(fallbackErr => {
+                console.error(`[AgentWs] Failed to transition ${agentId} offline on fallback:`, fallbackErr);
+                captureException(fallbackErr instanceof Error ? fallbackErr : new Error(String(fallbackErr)));
+                return { transitioned: false };
+              });
+              if (!transitioned) return;
               publishEvent('device.offline', agentDb.orgId, {
                 deviceId: agentId,
                 hostname: '',
@@ -3498,9 +3561,10 @@ if (activeConnections.get(agentId)?.ws === ws) {
           } catch (err) {
             console.error(`[AgentWs] Failed to check status for ${agentId} on error disconnect, falling back to offline:`, err);
           }
-          await updateDeviceStatus(agentId, 'offline');
+          await transitionDeviceOffline(agentId, ['online']);
         }).catch((err) => {
           console.error(`[AgentWs] Failed to mark agent ${agentId} offline after error:`, err);
+          captureException(err instanceof Error ? err : new Error(String(err)));
         });
       }
     }

@@ -115,6 +115,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'sso_token_exchange_grants', // One-time SSO exchange authority. Forced RLS, one system-only ALL policy; only guarded auth lifecycle transactions may consume it.
   'installed_extensions', // Global runtime-extension operational state (version/trust/lifecycle/enabled). No tenant axis. Forced RLS, system-only policy → only system context.
   'extension_schema_history', // Global append-only record of the schema-compatibility floor each extension bundle version applied. No tenant axis. Forced RLS, system-only policy → only system context.
+  'email_provider_domain_releases', // Provider-side "delete this domain" outbox (spec 2026-09-17 partner sending domains §3.3). Deliberately carries NO partner_id: cascadeDeletePartner deletes from every table that has one, which would erase the provider handle this table exists to keep across the partner's deletion. No tenant axis. Forced RLS, single system-only policy → only system context. Not in EXEMPT_TABLES: with no org_id and no shape-list entry, no offender scan reaches it.
 ]);
 
 // Tables with org_id metadata that are intentionally not generic org-tenant
@@ -133,6 +134,8 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // parent ticket at write time for filtering only — the RLS axis is
   // partner_id. Spec §8a / Phase 3 plan: deliberately no org/portal policies.
   'time_entries',
+  // Partner-axis: org metadata must not hide suspended customers' assignments.
+  'org_billing_profile_assignments',
   // Huntress credentials and discovered-org mappings are partner-scoped.
   // org_id is retained only as legacy/mapping metadata and may be NULL for
   // quarantined Huntress orgs.
@@ -173,6 +176,15 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // here keeps that generic check honest; PARENT_FK_JOIN_POLICY_TABLES is the
   // real assertion for this table's policy shape.
   'ticket_form_org_links',
+  // backup_provider_customers (#6008 W01): partner-axis (Shape 3) carrying a
+  // denormalized NULLABLE org_id — the MAPPING TARGET, not the tenancy axis.
+  // An unmapped customer has org_id NULL and must stay visible to the partner
+  // admin who has to map it, so breeze_has_org_access(org_id) is the wrong
+  // predicate here. Identical treatment to huntress_org_mappings /
+  // s1_org_mappings. Its sibling backup_provider_devices IS direct-org_id
+  // (Shape 1) and is deliberately NOT excluded — it is auto-discovered and
+  // must carry breeze_has_org_access(org_id) on all four commands.
+  'backup_provider_customers',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
@@ -190,6 +202,17 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['oauth_client_partner_grants', 'partner_id'],
   ['email_verification_tokens', 'partner_id'],
   ['ticket_categories', 'partner_id'],
+  // work_types (#4615, spec 2026-09-17 §4.2): partner-owned labour label.
+  // Shape 3, flat breeze_has_partner_access(partner_id). No org_id and no
+  // device_id by design (spec §4.1), so this is its ONLY registration list:
+  // not in CORE_ORG_CASCADE_DELETE_ORDER, not in CORE_TENANT_EXPORT_POLICY,
+  // not in orgMergeRegistry, and deliberately NOT in DUAL_AXIS_TENANT_TABLES
+  // or PARTNER_WIDE_SELECT_BRANCH_EXEMPT. Functional forge proof:
+  // workTypesPartnerRls.integration.test.ts.
+  ['work_types', 'partner_id'],
+  ['billing_profiles', 'partner_id'],
+  ['billing_profile_rules', 'partner_id'],
+  ['org_billing_profile_assignments', 'partner_id'],
   ['ticket_response_templates', 'partner_id'],
   ['ticket_mailbox_connections', 'partner_id'],
   ['ticket_mailbox_tenant_ownerships', 'partner_id'],
@@ -316,12 +339,53 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // for cascadeDeletePartner's dynamic partner_id sweep.
   // Functional cross-partner forge proof: orgMergeEventsRls.integration.test.ts.
   ['org_merge_events', 'partner_id'],
+  // Backup Provider Integration (#6008 W01): the MSP registers one external
+  // backup vendor connection (Cove) and maps its discovered customers to
+  // Breeze orgs. Both tables are partner-axis (Shape 3), four per-command
+  // breeze_has_partner_access policies each, the customers table additionally
+  // re-checking its parent connection's partner_id in INSERT/UPDATE WITH
+  // CHECK. backup_provider_customers is ALSO in
+  // ORG_AXIS_POLICY_EXCLUDED_TABLES (dual-list trap — it has an org_id column
+  // that is not its tenancy axis). backup_provider_devices and
+  // backup_provider_device_history carry a NOT NULL org_id and are ordinary
+  // Shape 1 tables, auto-discovered — not listed here, and their denormalized
+  // partner_id is deliberately NOT a second RLS read branch.
+  // Functional cross-partner forge proof:
+  // backupProviderRls.integration.test.ts.
+  ['backup_provider_connections', 'partner_id'],
+  ['backup_provider_customers', 'partner_id'],
+  // partner_sending_domains / partner_sender_identities (spec 2026-09-17,
+  // partner sending domains W02): the MSP's custom outbound From domain and
+  // one sender identity per (partner, mail stream). Partner-axis (Shape 3),
+  // deliberately no org_id — the From domain is the MSP's identity, and a
+  // per-org sending domain is the internal-phishing shape (spec §3.1). No
+  // org_id means no cascade / export-policy / org-merge registration;
+  // cascadeDeletePartner's dynamic partner_id sweep erases both, and its
+  // topological order puts identities before domains via the composite FK.
+  // GRANT includes DELETE for that sweep. The sibling outbox
+  // email_provider_domain_releases is INTENTIONAL_UNSCOPED above — it must
+  // never gain a partner_id column.
+  // Functional cross-partner forge proof: partnerSendingDomainsRls.integration.test.ts.
+  ['partner_sending_domains', 'partner_id'],
+  ['partner_sender_identities', 'partner_id'],
+  // partner_sending_daily_stats (spec 2026-09-17 §9.3, partner sending domains
+  // W06): per-partner, per-UTC-day delivery counters written by the Resend
+  // delivery webhook. Partner-axis (Shape 3) like its two siblings above, and
+  // deliberately without a domain_id dimension — the spec's bounce/complaint
+  // thresholds and the auto-suspension kill switch are both per PARTNER. No
+  // org_id means no cascade / export-policy / org-merge registration;
+  // cascadeDeletePartner's dynamic partner_id sweep erases it, and the GRANT
+  // includes DELETE for that sweep.
+  // Functional cross-partner forge proof: partnerSendingDailyStats.integration.test.ts.
+  ['partner_sending_daily_stats', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  'topology_config_templates',
+  'topology_config_template_versions',
   // network_monitors (#5287 W04): reshaped from org-only to org XOR partner by
   // 2026-10-16-181300-monitor-coverage-kinds, so one MSP-authored "is the
   // gateway up" check runs for every org under the partner. CHECK
@@ -338,6 +402,16 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // exactly one axis. Functional cross-partner forge proof:
   // monitorDefinitionsPartnerRls.integration.test.ts.
   'monitor_definitions',
+  // monitor_conversions / monitor_conversion_outputs (W05c1, alerting
+  // consolidation §Conversion): the ledger of legacy-row → monitor conversions.
+  // Owned on the SAME axis as the converted policy (org-owned policy → org
+  // ledger row; partner-wide policy → partner row), so org XOR partner from day
+  // one in 2026-10-23-110000-monitor-conversions with the partner-wide SELECT
+  // branch in the same migration. CHECK monitor_conversions_one_owner_chk /
+  // monitor_conversion_outputs_one_owner_chk. Functional forge proof:
+  // monitorConversionsPartnerRls.integration.test.ts (Task 18).
+  'monitor_conversions',
+  'monitor_conversion_outputs',
   // ai_script_policies (AI script authoring W04, #5612): a policy row is
   // org-scoped (org_id set — the GRANT) or partner-wide (partner_id set,
   // org_id NULL — the CEILING). Created dual-axis from day one in
@@ -659,11 +733,17 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // changes. If access_reviews ever gains a CHECK, this note has no examples
 // left and should be deleted rather than patched.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
+  'topology_config_templates',
+  'topology_config_template_versions',
   // monitor_definitions_one_owner_chk ((org_id IS NULL) <> (partner_id IS
   // NULL)), 2026-10-16-160300 (#5287 W02). Its partner-wide SELECT branch
   // (monitor_definitions_partner_wide_select) ships in the same migration, so
   // it needs no PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry.
   'monitor_definitions',
+  // monitor_conversions_one_owner_chk / monitor_conversion_outputs_one_owner_chk,
+  // 2026-10-23-110000 (W05c1). Partner-wide SELECT branch ships in the same file.
+  'monitor_conversions',
+  'monitor_conversion_outputs',
   // ai_script_policies_one_owner_chk, 2026-10-16-120200 (#5612 W04).
   'ai_script_policies',
   // deliverable_template_sets_one_owner_chk / deliverable_template_items_one_owner_chk
@@ -840,6 +920,7 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   ['config_policy_event_log_settings', ['configuration_policies']],
   ['dashboard_widgets', ['analytics_dashboards']],
   ['backup_snapshot_files', ['backup_snapshots']],
+  ['backup_snapshot_origins', ['backup_snapshots']],
   // psa_ticket_mappings already shipped a correct single-table-join policy
   // (2026-04-11-bucket-c-dead-cleanup-rls.sql) but had no org_id column and was
   // never allowlisted, so the contract test couldn't see it. Register it so a

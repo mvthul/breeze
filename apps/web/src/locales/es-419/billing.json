@@ -633,21 +633,49 @@
   "quotes": {
     "deviceSet": {
       "roleNoun": {
-        "workstation": "estaciones de trabajo", "server": "servidores", "printer": "impresoras", "router": "enrutadores", "switch": "conmutadores", "firewall": "cortafuegos",
-        "access_point": "puntos de acceso", "phone": "teléfonos", "iot": "dispositivos IoT", "camera": "cámaras", "nas": "dispositivos NAS"
+        "workstation": "estaciones de trabajo",
+        "server": "servidores",
+        "printer": "impresoras",
+        "router": "enrutadores",
+        "switch": "conmutadores",
+        "firewall": "cortafuegos",
+        "access_point": "puntos de acceso",
+        "phone": "teléfonos",
+        "iot": "dispositivos IoT",
+        "camera": "cámaras",
+        "nas": "dispositivos NAS"
       }
     },
     "editor": {
       "deviceSet": {
-        "toggle": "Facturar por conjunto de dispositivos", "typeLabel": "Conjunto de dispositivos",
-        "types": { "per_device": "Por dispositivo", "per_device_role": "Por rol de dispositivo", "per_device_group": "Por grupo de dispositivos", "per_seat": "Por licencia" },
-        "rolesLabel": "Roles de dispositivo", "groupLabel": "Grupo de dispositivos", "siteLabel": "Sitio (opcional)", "allSites": "Todos los sitios",
-        "quantityAuto": "La cantidad se cuenta automáticamente", "autoSummary": "Cantidad automática · {{count}} {{set}} · estimada",
-        "driftChip": "el conteo cambió: {{stored}} → {{live}}", "refresh": "Actualizar conteos", "estimateError": "No se pudo comprobar el conteo actual de dispositivos.", "pickerError": "No se pudieron cargar los grupos de dispositivos ni los sitios. Actualiza la página e inténtalo de nuevo.",
-        "groupDeleted": "El grupo de dispositivos “{{name}}” fue eliminado: elige otro", "siteDeleted": "El sitio “{{name}}” fue eliminado: elige otro",
+        "toggle": "Facturar por conjunto de dispositivos",
+        "typeLabel": "Conjunto de dispositivos",
+        "types": {
+          "per_device": "Por dispositivo",
+          "per_device_role": "Por rol de dispositivo",
+          "per_device_group": "Por grupo de dispositivos",
+          "per_seat": "Por licencia"
+        },
+        "rolesLabel": "Roles de dispositivo",
+        "groupLabel": "Grupo de dispositivos",
+        "siteLabel": "Sitio (opcional)",
+        "allSites": "Todos los sitios",
+        "quantityAuto": "La cantidad se cuenta automáticamente",
+        "autoSummary": "Cantidad automática · {{count}} {{set}} · estimada",
+        "driftChip": "el conteo cambió: {{stored}} → {{live}}",
+        "refresh": "Actualizar conteos",
+        "estimateError": "No se pudo comprobar el conteo actual de dispositivos.",
+        "pickerError": "No se pudieron cargar los grupos de dispositivos ni los sitios. Actualiza la página e inténtalo de nuevo.",
+        "groupDeleted": "El grupo de dispositivos “{{name}}” fue eliminado: elige otro",
+        "siteDeleted": "El sitio “{{name}}” fue eliminado: elige otro",
         "typeLocked": "Un conjunto de dispositivos no se puede cambiar después de crear la línea: elimina la línea y agrégala de nuevo.",
-        "allowanceGroupLabel": "Límite de cantidad", "allowanceToggle": "Incluir una cantidad fija y gestionar los extras",
-        "includedLabel": "Cantidad incluida", "overageModeLabel": "Por encima del límite incluido", "overageBill": "Facturar cada unidad adicional", "overageFlag": "Informar para revisión", "overagePriceLabel": "Precio por excedente",
+        "allowanceGroupLabel": "Límite de cantidad",
+        "allowanceToggle": "Incluir una cantidad fija y gestionar los extras",
+        "includedLabel": "Cantidad incluida",
+        "overageModeLabel": "Por encima del límite incluido",
+        "overageBill": "Facturar cada unidad adicional",
+        "overageFlag": "Informar para revisión",
+        "overagePriceLabel": "Precio por excedente",
         "driftToast": "{{count}} línea(s) ya no coinciden con el conteo actual de dispositivos: {{lines}}",
         "retargetToast": "{{count}} línea(s) necesitan que se vuelva a elegir un grupo de dispositivos o sitio para esta organización"
       },
@@ -1333,8 +1361,12 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Est.", "estimate": "Cantidad estimada: se factura la cantidad real de {{set}} en cada período de facturación.",
-        "setDevices": "dispositivos", "setSeats": "licencias", "setGroup": "dispositivos en “{{name}}”", "atSite": "{{set}} en {{site}}",
+        "badge": "Est.",
+        "estimate": "Cantidad estimada: se factura la cantidad real de {{set}} en cada período de facturación.",
+        "setDevices": "dispositivos",
+        "setSeats": "licencias",
+        "setGroup": "dispositivos en “{{name}}”",
+        "atSite": "{{set}} en {{site}}",
         "allowanceBill": "Incluye {{included}}; las unidades adicionales se facturan a {{price}} cada una.",
         "allowanceFlag": "Incluye {{included}}; las unidades adicionales se informan para revisión y no se facturan automáticamente."
       },
@@ -1622,6 +1654,7 @@
     },
     "summary": {
       "noTaxRate": "Las líneas están marcadas como sujetas a impuestos, pero no se establece ninguna tasa impositiva.",
+      "inheritedTaxRate": "El impuesto aún no está en este borrador: al emitirlo se aplica la tasa heredada de {{rate}}, que agrega {{tax}} para un total de {{total}}.",
       "setTaxRate": "Establecer uno en la configuración de facturación",
       "subtotal": "Total parcial",
       "tax": "Impuesto",
@@ -1828,6 +1861,7 @@
       },
       "reverseError": "No se pudo revertir el pago.",
       "reverseSuccess": "Pago revertido",
+      "reverseInQuickbooksToo": "Revierte este pago también en QuickBooks",
       "sendLink": "Enviar enlace de pago",
       "setUp": "Configuración",
       "shareLinkPrompt": "Comparta este enlace de pago con su cliente:",
@@ -2039,7 +2073,9 @@
       "total": "Total"
     },
     "title": "Facturas",
-    "tryAgain": "Intentar otra vez"
+    "tryAgain": "Intentar otra vez",
+    "exportBillables": "Exportar facturables",
+    "exportBillablesDialogTitle": "Exportar facturables"
   },
   "orgBillingSettings": {
     "address": {
@@ -2172,5 +2208,78 @@
     "statusPill": {
       "prefix": "Estado:"
     }
+  },
+  "partnerBillingSettingsTabs": {
+    "defaults": "Valores predeterminados",
+    "documents": "Documentos",
+    "connections": "Conexiones",
+    "rates": "Tarifas"
+  },
+  "billingConnectionsTab": {
+    "accounting": {
+      "title": "Contabilidad",
+      "description": "Stripe y QuickBooks se conectan en Integraciones — adminístralos allí.",
+      "cta": "Administrar conexiones contables →"
+    },
+    "catalog": {
+      "title": "Catálogo y distribuidores",
+      "description": "El catálogo de productos y las conexiones de distribuidores (Pax8, TD SYNNEX) están en dos lugares — cambia entre ellos aquí.",
+      "catalogCta": "Abrir catálogo de productos →",
+      "distributorsCta": "Abrir distribuidores →"
+    }
+  },
+  "orgBillingProfile": {
+    "label": "Perfil de facturación",
+    "inherit": "{{name}} (predeterminado del socio)",
+    "noProfile": "Sin perfil de facturación",
+    "unavailable": "Perfil asignado no disponible",
+    "resolved": "Tarifas de {{name}}",
+    "allOtherWork": "Todos los demás trabajos",
+    "billable": "Facturable a {{rate}}/h",
+    "included": "Incluido",
+    "nonBillable": "No facturable",
+    "noRate": "Facturable — tarifa sin configurar",
+    "minimum": "{{outcome}} · mínimo de {{minutes}} min",
+    "rounding": "Redondear a {{minutes}} minutos",
+    "archivedWorkType": "Tipo de trabajo archivado",
+    "mismatch": "El perfil de facturación asignado está inactivo o usa otra moneda. Se aplica el perfil predeterminado del socio con la moneda correspondiente.",
+    "currencyWarning": "El perfil de facturación asignado usa {{currency}}. Después de este cambio se aplicará el perfil predeterminado del socio con la moneda correspondiente.",
+    "loadError": "No se pudieron cargar los perfiles de facturación.",
+    "saveError": "No se pudo guardar el perfil de facturación.",
+    "partialSave": "Se guardó el perfil de facturación, pero no los demás ajustes de facturación. Vuelve a guardar para terminar."
+  },
+  "rates": {
+    "title": "Tarifas",
+    "description": "Define las tarifas de mano de obra por perfil de facturación y tipo de trabajo. Los cambios se aplican a nuevos registros de tiempo.",
+    "create": "Agregar perfil de facturación",
+    "loadError": "No se pudieron cargar los perfiles de facturación. Inténtalo de nuevo.",
+    "saveError": "No se pudo guardar el perfil de facturación.",
+    "saved": "Perfil de facturación guardado.",
+    "empty": "Agrega un perfil de facturación para configurar las tarifas de mano de obra.",
+    "profile": "Perfil de facturación",
+    "allOtherWork": "Todos los demás trabajos",
+    "actions": "Acciones",
+    "default": "Predeterminado",
+    "clone": "Duplicar perfil de facturación",
+    "setDefault": "Establecer como predeterminado",
+    "archive": "Archivar",
+    "usageUnavailable": "El uso por organizaciones no está disponible.",
+    "edit": "Editar perfil de facturación",
+    "name": "Nombre",
+    "currency": "Moneda",
+    "rounding": "Redondeo (minutos)",
+    "notes": "Notas",
+    "coverage": "Resultado de facturación",
+    "hourlyRate": "Tarifa por hora",
+    "minimum": "Mínimo (minutos)",
+    "billable": "Facturable",
+    "included": "Incluido",
+    "nonBillable": "No facturable",
+    "noRate": "Facturable · sin tarifa definida",
+    "billableAt": "Facturable a {{rate}}/h",
+    "minimumSummary": "Mínimo de {{minutes}} min",
+    "roundingSummary": "Redondear a {{minutes}} min",
+    "inherits": "Usa Todos los demás trabajos",
+    "currencyHelp": "No se puede cambiar la moneda de un perfil predeterminado o con tarifas. Deja el redondeo vacío para no redondear."
   }
 }

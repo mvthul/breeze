@@ -27,6 +27,7 @@ import {
   ChevronsDownUp,
   ShieldCheck,
   KeyRound,
+  LayoutTemplate,
   Package,
   Plug,
   Network,
@@ -240,7 +241,11 @@ export const navSections: NavSection[] = [
     icon: BrainCircuit,
     items: [
       { name: 'Fleet Orchestration', labelKey: 'nav.fleetOrchestration', href: '/fleet', icon: BrainCircuit },
-      { name: 'AI Assistant', labelKey: 'nav.aiAssistant', href: '/workspace', icon: MessagesSquare },
+      // #6498: /workspace drives the own-session /ai/* routes, every one of
+      // which requires ai_sessions:use (#6396). Without this gate a role holding
+      // only devices:read saw the full AI Workspace and a bare "Permission
+      // denied" on send.
+      { name: 'AI Assistant', labelKey: 'nav.aiAssistant', href: '/workspace', icon: MessagesSquare, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
       { name: 'AI Agents', labelKey: 'nav.aiAgents', href: '/settings/ai-agents', icon: Bot, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Execution-trace runs list/detail (Wave 6 PR 1, #3828) — file-routed under
       // /ai-agents/runs (not /settings/*) since a run is fleet activity, not
@@ -343,6 +348,7 @@ export const navSections: NavSection[] = [
       // two identical icons in one section is the confusion this wave removes.
       { name: 'Agreements', labelKey: 'nav.agreements', href: '/agreements/templates', icon: ScrollText, partnerScopeOnly: true, requiredPermission: { resource: 'agreements', action: 'read' } },
       { name: 'Product Catalog', labelKey: 'nav.productCatalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
+      { name: 'Deliverable Templates', labelKey: 'nav.deliverableTemplates', href: '/settings/deliverable-templates', icon: LayoutTemplate, partnerScopeOnly: true },
     ],
   },
   {
@@ -368,6 +374,7 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Partner', labelKey: 'nav.partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
       { name: 'Billing', labelKey: 'nav.billing', href: '/settings/billing', icon: CreditCard, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
+      { name: 'Ticketing', labelKey: 'nav.ticketing', href: '/settings/ticketing', icon: Ticket, partnerScopeOnly: true },
       // Users + Roles are both served by the users routes (users:read).
       { name: 'Users', labelKey: 'nav.users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
       { name: 'Roles', labelKey: 'nav.roles', href: '/settings/roles', icon: KeyRound, requiredPermission: { resource: 'users', action: 'read' } },

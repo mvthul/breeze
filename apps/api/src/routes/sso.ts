@@ -94,6 +94,7 @@ import {
   SSO_PENDING_LINK_TTL_SECONDS,
 } from '../services/ssoPendingLink';
 import { installAuthBindingReplacement, requestAuthBinding } from './auth/binding';
+import { mfaSrcFor } from '../services/mfaAssuranceSource';
 import {
   AuthBindingRotationRequiredError,
   AuthBindingUnavailableError,
@@ -3509,10 +3510,12 @@ ssoRoutes.get('/callback', async (c) => {
       orgId: provider.partnerId ? null : provider.orgId,
       partnerId: provider.partnerId ?? null,
     });
-    const ssoMfa = provider.trustsIdpMfa === true || (idpMfa && (
+    const ssoMfa = idpMfa && (
       user.mfaEnabled === true
       || (provisionedRoleId === null && !ssoPolicy.required)
-    ));
+    );
+    // Every `ssoMfa: true` rests on the trusted IdP assertion (spec D6).
+    const ssoMfaSrc = mfaSrcFor(ssoMfa, 'idp');
 
     // Membership resolution + guarded session identity, keyed on the provider's axis.
     let sessionIdentity: UserSessionIdentity;
@@ -3558,7 +3561,8 @@ ssoRoutes.get('/callback', async (c) => {
         orgId: null,
         partnerId: providerPartnerId,
         scope: 'partner' as const,
-        mfa: ssoMfa
+        mfa: ssoMfa,
+        mfaSrc: ssoMfaSrc
       };
     } else {
       // System context required: same class of bug as the "Get provider"
@@ -3610,7 +3614,8 @@ ssoRoutes.get('/callback', async (c) => {
         orgId: provider.orgId!,
         partnerId: null,
         scope: 'organization' as const,
-        mfa: ssoMfa
+        mfa: ssoMfa,
+        mfaSrc: ssoMfaSrc
       };
     }
 
