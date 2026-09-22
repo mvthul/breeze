@@ -262,14 +262,58 @@ export interface IDTokenClaims {
 }
 
 /**
+ * RFC 8176 Authentication Method Reference (amr) values that independently
+ * attest multi-factor or phishing-resistant authentication:
+ * - `mfa`: RFC 8176 composite multi-factor indicator
+ * - `phr`: RFC 8176 phishing-resistant authentication (e.g. FIDO2 / WebAuthn passkeys,
+ *          as emitted by PocketID and passkey-first IdPs)
+ * - `hwk`: RFC 8176 proof-of-possession of a hardware-secured key (e.g. hardware FIDO2 key)
+ * - `fido2` / `webauthn` / `passkey`: Common vendor/profile aliases for WebAuthn authentication
+ */
+const COMPOSITE_OR_STRONG_MFA_AMR = new Set([
+  'mfa',
+  'phr',
+  'hwk',
+  'webauthn',
+  'fido2',
+  'passkey',
+]);
+
+const KNOWLEDGE_FACTORS = new Set(['pwd', 'pin', 'kba']);
+const POSSESSION_OR_BIOMETRIC_FACTORS = new Set([
+  'otp',
+  'sms',
+  'tel',
+  'push',
+  'sc',
+  'swk',
+  'bio',
+  'fpt',
+]);
+
+/**
  * True when the IdP's id_token attests that multi-factor authentication was
- * performed — `amr` contains the RFC 8176 `mfa` method reference. This is only
- * trusted when the provider opts in via `trustsIdpMfa`; an org that does not
+ * performed — either through a composite/phishing-resistant method reference
+ * (`mfa`, `phr`, `hwk`, `webauthn`, `fido2`, `passkey`), or through a combination
+ * of distinct factor categories under RFC 8176 §2 (e.g. `pwd` + `otp`).
+ *
+ * This is only trusted when the provider opts in via `trustsIdpMfa`; an org that does not
  * opt in always gets `mfa:false` (fail-safe). Never used to satisfy the L4
  * step-up, which independently re-verifies a Breeze-held factor.
  */
 export function idpAssertedMfa(claims: Pick<IDTokenClaims, 'amr'>): boolean {
-  return Array.isArray(claims.amr) && claims.amr.includes('mfa');
+  if (!Array.isArray(claims.amr)) return false;
+
+  // 1. Direct composite or strong/phishing-resistant authenticator match (e.g. PocketID emits ["phr"])
+  if (claims.amr.some((m) => typeof m === 'string' && COMPOSITE_OR_STRONG_MFA_AMR.has(m.toLowerCase()))) {
+    return true;
+  }
+
+  // 2. RFC 8176 combination of individual factors (e.g. ["pwd", "otp"] or ["pwd", "sms"])
+  const hasKnowledge = claims.amr.some((m) => typeof m === 'string' && KNOWLEDGE_FACTORS.has(m.toLowerCase()));
+  const hasPossessionOrBiometric = claims.amr.some((m) => typeof m === 'string' && POSSESSION_OR_BIOMETRIC_FACTORS.has(m.toLowerCase()));
+
+  return hasKnowledge && hasPossessionOrBiometric;
 }
 
 /** Tolerance for an IdP clock running ahead of ours. */

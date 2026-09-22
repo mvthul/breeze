@@ -400,7 +400,7 @@ The forgot-password and reset-password flows honor SSO enforcement. A partner-sc
 
 ### Satisfying Breeze MFA with your IdP
 
-By default, Breeze never accepts an IdP's own multi-factor authentication as satisfying its own MFA-gated routes (mutating SSO provider config, PAM checkouts, and similar sensitive actions) — every account, SSO-provisioned or not, must separately satisfy Breeze's own MFA requirement on those routes. Set `trustsIdpMfa: true` on a provider (organization or partner-owned) to change that: when the id_token from that provider's login includes `amr: mfa` — an [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176) Authentication Method Reference claim meaning the user completed multi-factor authentication at the IdP — Breeze treats MFA as satisfied for that sign-in.
+By default, Breeze never accepts an IdP's own multi-factor authentication as satisfying its own MFA-gated routes (mutating SSO provider config, PAM checkouts, and similar sensitive actions) — every account, SSO-provisioned or not, must separately satisfy Breeze's own MFA requirement on those routes. Set `trustsIdpMfa: true` on a provider (organization or partner-owned) to change that: when the id_token from that provider's login includes an [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176) Authentication Method Reference (`amr`) claim indicating multi-factor authentication (such as `mfa`, `phr` for phishing-resistant / WebAuthn passkeys, `hwk` for hardware keys, or combinations like `pwd` + `otp`) — Breeze treats MFA as satisfied for that sign-in.
 
 Two things to know before turning this on:
 

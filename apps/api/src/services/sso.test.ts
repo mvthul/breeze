@@ -46,18 +46,38 @@ vi.mock('jose', async (importOriginal) => {
 });
 vi.mock('../db', () => ({ assertOutsideHeldDbContext: vi.fn() }));
 
-describe('idpAssertedMfa (security review #2 H-1)', () => {
-  it('is true only when amr contains the RFC 8176 "mfa" reference', () => {
+describe('idpAssertedMfa (security review #2 H-1, RFC 8176 compliance)', () => {
+  it('is true when amr contains the RFC 8176 "mfa" reference', () => {
     expect(idpAssertedMfa({ amr: ['mfa'] })).toBe(true);
     expect(idpAssertedMfa({ amr: ['pwd', 'otp', 'mfa'] })).toBe(true);
   });
 
+  it('is true for phishing-resistant or hardware-backed authenticators (e.g. PocketID passkey phr)', () => {
+    expect(idpAssertedMfa({ amr: ['phr'] })).toBe(true);
+    expect(idpAssertedMfa({ amr: ['hwk'] })).toBe(true);
+    expect(idpAssertedMfa({ amr: ['fido2'] })).toBe(true);
+    expect(idpAssertedMfa({ amr: ['webauthn'] })).toBe(true);
+    expect(idpAssertedMfa({ amr: ['passkey'] })).toBe(true);
+    expect(idpAssertedMfa({ amr: ['pwd', 'phr'] })).toBe(true);
+  });
+
+  it('is true for RFC 8176 combinations of distinct factor categories', () => {
+    expect(idpAssertedMfa({ amr: ['pwd', 'otp'] })).toBe(true);
+    expect(idpAssertedMfa({ amr: ['pwd', 'sms'] })).toBe(true);
+    expect(idpAssertedMfa({ amr: ['pin', 'otp'] })).toBe(true);
+    expect(idpAssertedMfa({ amr: ['pwd', 'fpt'] })).toBe(true);
+  });
+
   it('is false for single-factor or missing amr', () => {
     expect(idpAssertedMfa({ amr: ['pwd'] })).toBe(false);
+    expect(idpAssertedMfa({ amr: ['pin'] })).toBe(false);
+    expect(idpAssertedMfa({ amr: ['otp'] })).toBe(false);
+    expect(idpAssertedMfa({ amr: ['sms'] })).toBe(false);
     expect(idpAssertedMfa({ amr: [] })).toBe(false);
     expect(idpAssertedMfa({})).toBe(false);
     // A non-array amr (malformed) must not be trusted.
     expect(idpAssertedMfa({ amr: 'mfa' as unknown as string[] })).toBe(false);
+    expect(idpAssertedMfa({ amr: 'phr' as unknown as string[] })).toBe(false);
   });
 });
 
