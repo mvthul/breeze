@@ -8,6 +8,9 @@ on:
         required: true
         default: 'main'
 
+permissions:
+  contents: read
+
 jobs:
   build-agent-windows:
     name: Build Breeze Agent (Windows)
