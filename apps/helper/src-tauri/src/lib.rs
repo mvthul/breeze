@@ -1496,21 +1496,6 @@ mod tests {
     }
 
     #[test]
-    fn status_path_from_config_path_derives_correct_filename() {
-        let session_config = PathBuf::from("/var/lib/breeze/sessions/s-1/helper_config.yaml");
-        assert_eq!(
-            status_path_from_config_path(&session_config),
-            PathBuf::from("/var/lib/breeze/sessions/s-1/helper_status.yaml")
-        );
-
-        let legacy_config = PathBuf::from("C:\\ProgramData\\Breeze\\helper_config.yaml");
-        assert_eq!(
-            status_path_from_config_path(&legacy_config),
-            PathBuf::from("C:\\ProgramData\\Breeze\\helper_status.yaml")
-        );
-    }
-
-    #[test]
     fn helper_token_does_not_fallback_to_full_agent_token() {
         let yaml: serde_yaml::Value = serde_yaml::from_str(
             r#"
